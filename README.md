@@ -39,7 +39,7 @@ Touch controls are shown on narrow screens.
 - 沙漠旋转工地
 - 冰山滑雪场
 
-The minimap is generated from each track's route centerline so that the marker and route share the same projection.
+The race uses each track's exported minimap and its projection data to place the driver marker.
 
 ## Asset Notice
 

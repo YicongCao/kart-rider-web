@@ -1,4 +1,6 @@
-type SoundName = "click" | "start" | "countdown" | "booster" | "boostDrift" | "collide" | "finish";
+import { localRaceAsset } from "./local-race-assets";
+
+type SoundName = "click" | "start" | "countdown" | "booster" | "boostDrift" | "collide" | "crash" | "finish";
 
 const AUDIO_BASE = "/assets/audio";
 
@@ -17,7 +19,7 @@ export class AudioManager {
     ["booster", `${AUDIO_BASE}/booster.ogg`],
     ["boostDrift", `${AUDIO_BASE}/boosterDrift.ogg`],
     ["collide", `${AUDIO_BASE}/collide.ogg`],
-    ["finish", `${AUDIO_BASE}/start.ogg`],
+    ["crash", `${AUDIO_BASE}/crash.ogg`],
   ]);
   private target = {
     menu: 0,
@@ -34,6 +36,9 @@ export class AudioManager {
     this.drift.volume = 0;
     this.menuMusic.volume = 0;
     this.raceMusic.volume = 0;
+    void localRaceAsset("finish.ogg").then((url) => {
+      if (url) this.sounds.set("finish", url);
+    });
   }
 
   async unlock() {
@@ -132,7 +137,6 @@ export class AudioManager {
     }
     const audio = new Audio(source);
     audio.volume = this.muted ? 0 : 0.58;
-    audio.playbackRate = name === "finish" ? 0.9 : 1;
     void this.safePlay(audio);
   }
 

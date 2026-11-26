@@ -22,17 +22,28 @@ The browser build uses assets converted from a local KartRider 1.0 installation 
 | `public/assets/audio/booster.ogg`, `boosterDrift.ogg` | P3563 `sound_fx_kart.rho/engine_common/` | Cotton C1 uses the common bank for boost sounds. The archive supplies identical audio for `boosterStart.ogg` and `booster.ogg`, and a separate cue for drift boosts |
 | `public/assets/audio/` | KartRider 1.0 sound archive | Ogg Vorbis |
 
-The conversion scripts used for these files live outside this web project in the parent workspace. Track route files are resampled centerlines derived from the original track road data. The four `minimap.png` files are retained for reference, but the in-game minimap is generated from the route centerline instead.
+The conversion scripts used for these files live outside this web project in the parent workspace. Track route files are resampled centerlines derived from the original track road data. The race displays the four exported `minimap.png` files and positions the marker using the `ToMinimap` calibration from each track.
 
 ## 比赛画面素材审查
 
 | 画面元素 | 当前来源 |
 | --- | --- |
-| 道具栏 | 空槽用 CSS 绘制，使用了速度表通用图标。氮气就绪时优先加载本地授权的 `public/local-assets/nitro-ready.png`，缺省显示 N₂O 文字。此目录不纳入 Git，Vite 会将其复制到本地构建。 |
-| 小地图 | 路线根据赛道中心线实时绘制，车头方向箭头由 Web SVG 绘制。 |
-| 广告牌 | 缺贴图的 `ad_*` 材质使用运行时生成的 Canvas 纹理。 |
-| 赛道粒子、车底阴影和轮胎拖痕 | Web 运行时生成。喷气、加速气浪、尾气贴图与加速模糊遮罩的来源见上表。 |
+| 道具栏 | 优先加载本地授权的空槽图。缺省空槽用 CSS 绘制，辅以速度表通用图标。氮气就绪时优先加载本地授权的 `public/local-assets/nitro-ready.png`，缺省显示 N₂O 文字。此目录不纳入 Git，Vite 会将其复制到本地构建。 |
+| 小地图 | 全图和局部地图均使用已导出的原版 PNG，车标按赛道 `ToMinimap` 数据定位。可提供本地授权箭头图。 |
+| 广告牌 | 保留 glTF 材质自带的贴图。缺贴图的 `ad_*` 优先加载本地授权贴图，缺省使用运行时生成的 Canvas 纹理。 |
+| 赛道粒子、车底阴影和轮胎拖痕 | 优先加载本地授权贴图，缺省由 Web 运行时生成。喷气、加速气浪、尾气贴图与加速模糊遮罩的来源见上表。 |
+| 撞击与完赛反馈 | 已导出的红色碰撞码表图层用于短时碰撞反馈。正向碰撞速度达到 10 m/s 时播放 `crash.ogg`，其余碰撞播放 `collide.ogg`。可提供本地授权的完赛音效。 |
 | 暂停、声音、全屏和底栏导航 | Web 控件使用 SVG 图标。码表、集气条和起跑倒计时使用上表列出的资源。 |
+
+### 本地素材入口
+
+将有权使用的文件放入 `public/local-assets/`，在同目录的 `race-assets.json` 中列出已提供的相对路径。例如：
+
+```json
+["item-slot.png", "minimap-arrow.png", "kart-shadow.png", "skidmark.png", "finish.ogg", "tracks/village/ads/ad_start.png", "tracks/village/particle.png"]
+```
+
+箭头 PNG 以朝上为初始方向。阴影、拖痕和粒子 PNG 使用透明背景。广告文件名对应 glTF 材质名。未列出的文件使用缺省素材，完赛不播放单独音效。氮气图标仍读取 `public/local-assets/nitro-ready.png`，无需列入清单。
 
 ## Font
 

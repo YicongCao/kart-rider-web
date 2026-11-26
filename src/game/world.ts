@@ -28,21 +28,7 @@ import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { RouteData, TrackInfo } from "../types";
 import { Route } from "./route";
 import { TrackCollision } from "./track-collision";
-
-export interface MinimapProjection {
-  centerX: number;
-  centerY: number;
-  scale: number;
-  width: number;
-  height: number;
-  path: string;
-}
-
-export interface TrackLoadResult {
-  route: Route;
-  collision: TrackCollision;
-  minimap: MinimapProjection;
-}
+import { localRaceAsset } from "./local-race-assets";
 
 interface WeatherCue {
   color: string;
@@ -109,7 +95,6 @@ export class RaceWorld {
 
   route: Route | null = null;
   collision: TrackCollision | null = null;
-  minimap: MinimapProjection | null = null;
   track: TrackInfo | null = null;
 
   private currentTrackScene: Group | null = null;
@@ -181,7 +166,7 @@ export class RaceWorld {
   async load(
     track: TrackInfo,
     onProgress: (progress: number, hint: string) => void,
-  ): Promise<TrackLoadResult> {
+  ): Promise<void> {
     this.unloadTrack();
     this.track = track;
     this.scene.background = new Color(track.skyColor);
@@ -211,17 +196,15 @@ export class RaceWorld {
     const routeData = (await routeResponse.json()) as RouteData;
     this.route = new Route(routeData, track.start);
     this.collision = new TrackCollision(trackGltf, track.id);
-    this.minimap = this.buildMinimapProjection(this.route);
 
     reported = Math.max(reported, 0.94);
     onProgress(reported, "准备起跑");
 
-    this.prepareTrack(trackGltf);
+    await this.prepareTrack(trackGltf, track.id);
     this.prepareSky(skyGltf);
-    this.buildWeather(track.theme);
+    await this.buildWeather(track);
     onProgress(1, "准备起跑");
 
-    return { route: this.route, collision: this.collision, minimap: this.minimap };
   }
 
   update(delta: number) {
@@ -256,6 +239,7 @@ export class RaceWorld {
     this.disposed = true;
     this.resizeObserver?.disconnect();
     this.unloadTrack();
+    this.particleTexture?.dispose();
     this.boostFrame.dispose();
     this.boostBlur.uniforms.mask.value.dispose();
     this.boostBlur.dispose();
@@ -263,10 +247,10 @@ export class RaceWorld {
     this.renderer.dispose();
   }
 
-  private prepareTrack(gltf: GLTF) {
+  private async prepareTrack(gltf: GLTF, trackId: string) {
     this.currentTrackScene = gltf.scene;
     const anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
-    let adIndex = 0;
+    const ads = new Set<MeshBasicMaterial>();
 
     gltf.scene.traverse((object) => {
       if (!(object instanceof Mesh)) {
@@ -289,16 +273,25 @@ export class RaceWorld {
         material.fog = true;
         material.toneMapped = false;
         if (materialName.startsWith("ad_") && !material.map) {
-          material.map = this.createAdTexture(adIndex);
-          material.map.colorSpace = SRGBColorSpace;
-          material.map.anisotropy = anisotropy;
-          material.color.set("#ffffff");
-          material.needsUpdate = true;
-          adIndex += 1;
+          ads.add(material);
         }
       }
     });
 
+    const loader = new TextureLoader();
+    await Promise.all([...ads].map(async (material, index) => {
+      const path = await localRaceAsset(`tracks/${trackId}/ads/${material.name}.png`);
+      const texture = path ? await loader.loadAsync(path).catch(() => null) : null;
+      material.map = texture ?? this.createAdTexture(index);
+      if (texture) {
+        texture.center.set(0.5, 0.5);
+        texture.rotation = Math.PI;
+      }
+      material.map.colorSpace = SRGBColorSpace;
+      material.map.anisotropy = anisotropy;
+      material.color.set("#ffffff");
+      material.needsUpdate = true;
+    }));
     this.trackRoot.add(gltf.scene);
   }
 
@@ -331,9 +324,11 @@ export class RaceWorld {
     this.skyRoot.add(gltf.scene);
   }
 
-  private buildWeather(theme: string) {
+  private async buildWeather(track: TrackInfo) {
     this.clearWeather();
-    const cue = weatherFor(theme);
+    const cue = weatherFor(track.theme);
+    const path = await localRaceAsset(`tracks/${track.id}/particle.png`);
+    const texture = path ? await new TextureLoader().loadAsync(path).catch(() => null) : null;
     this.weatherCue = cue;
     const count = 320;
     const positions = new Float32Array(count * 3);
@@ -349,15 +344,15 @@ export class RaceWorld {
 
     this.weatherPositions = positions;
     this.weatherVelocity = velocities;
-    this.particleTexture ??= this.createParticleTexture();
+    if (!texture) this.particleTexture ??= this.createParticleTexture();
 
     const geometry = new BufferGeometry();
     geometry.setAttribute("position", new BufferAttribute(positions, 3));
     const material = new PointsMaterial({
-      color: cue.color,
+      color: texture ? "#ffffff" : cue.color,
       size: cue.size,
       sizeAttenuation: true,
-      map: this.particleTexture,
+      map: texture ?? this.particleTexture,
       transparent: true,
       opacity: cue.opacity,
       depthWrite: false,
@@ -476,61 +471,13 @@ export class RaceWorld {
       this.weatherRoot.remove(this.weather);
       this.weather.geometry.dispose();
       const material = this.weather.material as PointsMaterial;
+      if (material.map !== this.particleTexture) material.map?.dispose();
       material.dispose();
       this.weather = null;
     }
     this.weatherPositions = null;
     this.weatherVelocity = null;
     this.weatherCue = null;
-  }
-
-  private buildMinimapProjection(route: Route): MinimapProjection {
-    let minX = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let minZ = Number.POSITIVE_INFINITY;
-    let maxZ = Number.NEGATIVE_INFINITY;
-    for (const point of route.points) {
-      minX = Math.min(minX, point.p[0]);
-      maxX = Math.max(maxX, point.p[0]);
-      minZ = Math.min(minZ, point.p[2]);
-      maxZ = Math.max(maxZ, point.p[2]);
-    }
-    const width = 256;
-    const height = 256;
-    const padding = 22;
-    const scale = (Math.min(width, height) - padding * 2) / Math.max(maxX - minX, maxZ - minZ, 1);
-    const centerX = (minX + maxX) / 2;
-    const centerY = -(minZ + maxZ) / 2;
-    let path = "";
-    let previousX = Number.NaN;
-    let previousY = Number.NaN;
-    for (const [index, point] of route.points.entries()) {
-      const x = (point.p[0] - centerX) * scale + width / 2;
-      const y = (-point.p[2] - centerY) * scale + height / 2;
-      const move = index === 0 || (route.warpIndex >= 0 && index === route.warpIndex + 1);
-      if (!move && Math.hypot(x - previousX, y - previousY) < 0.45) {
-        continue;
-      }
-      path += `${move ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
-      previousX = x;
-      previousY = y;
-    }
-    const first = route.points[0];
-    const last = route.points[route.points.length - 1];
-    if (first && last && route.warpIndex !== route.points.length - 1 &&
-        Math.hypot(first.p[0] - last.p[0], first.p[2] - last.p[2]) < 8) {
-      const x = (first.p[0] - centerX) * scale + width / 2;
-      const y = (-first.p[2] - centerY) * scale + height / 2;
-      path += `L${x.toFixed(1)} ${y.toFixed(1)}`;
-    }
-    return {
-      centerX,
-      centerY,
-      scale,
-      width,
-      height,
-      path,
-    };
   }
 
   private unloadTrack() {
@@ -547,7 +494,6 @@ export class RaceWorld {
     this.clearWeather();
     this.route = null;
     this.collision = null;
-    this.minimap = null;
   }
 
   private disposeObject(root: Group) {

@@ -12,6 +12,7 @@ import {
   MeshBasicMaterial,
   Object3D,
   PlaneGeometry,
+  RepeatWrapping,
   Scene,
   SRGBColorSpace,
   TextureLoader,
@@ -20,6 +21,7 @@ import {
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import { KartExhaust } from "./exhaust";
+import { localRaceAsset } from "./local-race-assets";
 import type { VehicleState } from "./vehicle";
 import type { RouteSample } from "../types";
 
@@ -79,6 +81,8 @@ export class KartView {
   private trailGeometry = new BufferGeometry();
   private trailMesh: Mesh;
   private trailPositions = new Float32Array(MAX_TRAIL_VERTICES * 3);
+  private trailUvs = new Float32Array(MAX_TRAIL_VERTICES * 2);
+  private trailDistance = 0;
   private trailVertexCount = 0;
   private trailCursor = 0;
   private trailStarted = false;
@@ -166,6 +170,10 @@ export class KartView {
     const exhaustPort = kartScene.getObjectByName("port0");
     if (!rekart || !exhaustPort) throw new Error("Cotton1 exhaust attachment is missing");
     this.exhaust = new KartExhaust(exhaustPort, rekart, booster, wave, smoke, this.scene);
+    await Promise.all([
+      this.useLocalTexture("kart-shadow.png", this.shadow?.material as MeshBasicMaterial | undefined),
+      this.useLocalTexture("skidmark.png", this.trailMesh.material as MeshBasicMaterial, true),
+    ]);
     this.loaded = true;
     this.root.visible = true;
     onProgress?.(1);
@@ -230,6 +238,7 @@ export class KartView {
     this.trailStarted = false;
     this.trailVertexCount = 0;
     this.trailCursor = 0;
+    this.trailDistance = 0;
     this.trailGeometry.setDrawRange(0, 0);
   }
 
@@ -279,7 +288,9 @@ export class KartView {
       material.dispose();
     }
     this.trailGeometry.dispose();
-    (this.trailMesh.material as MeshBasicMaterial).dispose();
+    const trailMaterial = this.trailMesh.material as MeshBasicMaterial;
+    trailMaterial.map?.dispose();
+    trailMaterial.dispose();
     this.exhaust?.dispose();
     this.root.traverse((object) => {
       if (object instanceof Mesh) {
@@ -353,6 +364,7 @@ export class KartView {
 
   private createTrail() {
     this.trailGeometry.setAttribute("position", new BufferAttribute(this.trailPositions, 3));
+    this.trailGeometry.setAttribute("uv", new BufferAttribute(this.trailUvs, 2));
     this.trailGeometry.setDrawRange(0, 0);
     const material = new MeshBasicMaterial({
       color: "#15191b",
@@ -367,6 +379,19 @@ export class KartView {
     mesh.frustumCulled = false;
     mesh.renderOrder = 3;
     return mesh;
+  }
+
+  private async useLocalTexture(file: string, material?: MeshBasicMaterial, repeat = false) {
+    const path = await localRaceAsset(file);
+    if (!path || !material) return;
+    const texture = await new TextureLoader().loadAsync(path).catch(() => null);
+    if (!texture) return;
+    texture.colorSpace = SRGBColorSpace;
+    if (repeat) texture.wrapT = RepeatWrapping;
+    material.map?.dispose();
+    material.map = texture;
+    material.color.set("#ffffff");
+    material.needsUpdate = true;
   }
 
   private updateTrail(state: VehicleState, groundHeight?: (x: number, y: number, z: number) => number | null) {
@@ -390,19 +415,34 @@ export class KartView {
       }
     }
     if (this.trailStarted) {
-      if (this.previousTread[0].distanceToSquared(this.currentTread[0]) < 0.12 ** 2) return;
+      const distance = this.previousTread[0].distanceTo(this.currentTread[0]);
+      if (distance < 0.12) return;
+      const start = this.trailDistance % 1;
+      const end = start + distance;
       for (const edge of [0, 2]) {
         const previousInner = this.previousTread[edge];
         const previousOuter = this.previousTread[edge + 1];
         const inner = this.currentTread[edge];
         const outer = this.currentTread[edge + 1];
-        for (const vertex of [previousInner, inner, previousOuter, previousOuter, inner, outer]) {
+        const trianglePair = [
+          { vertex: previousInner, u: 0, v: start },
+          { vertex: inner, u: 0, v: end },
+          { vertex: previousOuter, u: 1, v: start },
+          { vertex: previousOuter, u: 1, v: start },
+          { vertex: inner, u: 0, v: end },
+          { vertex: outer, u: 1, v: end },
+        ];
+        for (const { vertex, u, v } of trianglePair) {
           vertex.toArray(this.trailPositions, this.trailCursor * 3);
+          this.trailUvs[this.trailCursor * 2] = u;
+          this.trailUvs[this.trailCursor * 2 + 1] = v;
           this.trailCursor = (this.trailCursor + 1) % MAX_TRAIL_VERTICES;
         }
       }
+      this.trailDistance = end;
       this.trailVertexCount = Math.min(MAX_TRAIL_VERTICES, this.trailVertexCount + 12);
       this.trailGeometry.getAttribute("position").needsUpdate = true;
+      this.trailGeometry.getAttribute("uv").needsUpdate = true;
       this.trailGeometry.setDrawRange(0, this.trailVertexCount);
     }
     [this.previousTread, this.currentTread] = [this.currentTread, this.previousTread];

@@ -10,6 +10,7 @@ export interface TrackInfo {
   card: string;
   thumb: string;
   minimap: string;
+  minimapProjection: { centerX: number; centerY: number; scale: number };
   scene: string;
   sky: string;
   route: string;

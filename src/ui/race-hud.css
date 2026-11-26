@@ -54,6 +54,12 @@
   content: "";
 }
 .race-slot.is-ready::before { display: none; }
+.race-slots.has-slot-art .race-slot {
+  background: var(--slot-art) center / 100% 100% no-repeat;
+  box-shadow: none;
+  border-color: transparent;
+}
+.race-slots.has-slot-art .race-slot::before { display: none; }
 .race-nitro-item { display: none; }
 .race-slot.is-ready .race-nitro-item {
   display: grid;
@@ -122,14 +128,7 @@
 }
 .race-map.is-overview .race-map-road { mask-image: none; }
 .race-map.is-overview .race-map-road svg { transform: none; }
-.race-map-window path[data-minimap-path] {
-  fill: none;
-  stroke: #dbe2e5;
-  stroke-opacity: .49;
-  stroke-width: 2.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
+.race-map-window [data-minimap-road] { fill: #dbe2e5; opacity: .49; }
 .race-map-arrow {
   position: absolute;
   width: 61em;
@@ -140,7 +139,8 @@
   transform-origin: center;
 }
 .race-map.is-overview .race-map-arrow { width: 26em; height: 21em; }
-.race-map.is-overview path[data-minimap-path] { stroke-opacity: .88; stroke-width: 4; }
+.race-map-arrow:not(.has-arrow-art) image, .race-map-arrow.has-arrow-art path { visibility: hidden; }
+.race-map.is-overview [data-minimap-road] { opacity: .88; }
 .race-map-switch {
   position: absolute;
   z-index: 1;
@@ -204,6 +204,8 @@
   background: url("/assets/ui/race/tacho_v1_baseBG_1.png") center / contain no-repeat;
 }
 .race-tacho.is-moving { background-image: url("/assets/ui/race/tacho_v1_baseBG_2.png"); }
+.race-impact { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; }
+.race-tacho.is-impact .race-impact { opacity: 1; }
 .race-tacho-label { position: absolute; right: 74%; top: 14%; color: #b6c4d1; font: italic 700 9em/1 Arial,sans-serif; }
 .race-slip { position: absolute; left: 25%; top: 14%; width: 50%; height: 8%; background: url("/assets/ui/race/tacho_v1_exeedBoosterBG.png") center/100% 100%; }
 .race-slip i { display: block; height: 44%; margin-top: 1.6%; background: #ffc956; transform-origin: left; }

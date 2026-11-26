@@ -64,6 +64,7 @@ export interface VehicleState {
   miniBoostCount: number;
   nitroCount: number;
   collisionCount: number;
+  impactSpeed: number;
   /** Distance along the course in metres, when a route is attached. */
   progress: number;
   /** progress / route length, in 0..1. */
@@ -420,6 +421,7 @@ export class KartVehicle {
   private miniBoostCount = 0;
   private nitroCount = 0;
   private collisionCount = 0;
+  private impactSpeed = 0;
   private lastImpact = -Infinity;
   private startBoostConsumed: boolean;
   private startAtSecondsValue: number | null;
@@ -534,6 +536,7 @@ export class KartVehicle {
       miniBoostCount: this.miniBoostCount,
       nitroCount: this.nitroCount,
       collisionCount: this.collisionCount,
+      impactSpeed: this.impactSpeed,
       progress: this.routeProgress,
       lapProgress: this.lapProgressValue,
       lap: this.lapValue,
@@ -1030,6 +1033,7 @@ export class KartVehicle {
 
     if (closingSpeed > 2.5 && this.elapsedSeconds - this.lastImpact > 0.45) {
       this.collisionCount++;
+      this.impactSpeed = closingSpeed;
       this.lastImpact = this.elapsedSeconds;
       this.pendingGauge *= this.configuration.driftGaugePreserveOnImpact;
     }

@@ -4,7 +4,6 @@ import { AudioManager } from "./audio";
 import { InputController } from "./input";
 import { KartView } from "./kart-view";
 import { RaceWorld } from "./world";
-import type { MinimapProjection } from "./world";
 import {
   FIXED_STEP_SECONDS,
   KartVehicle,
@@ -76,7 +75,6 @@ export class Game {
   private phase: RacePhase = "menu";
   private selectedTrackId = "";
   private currentTrack: TrackInfo | null = null;
-  private minimapProjection: MinimapProjection | null = null;
   private routeForward: [number, number, number] = [0, 0, 1];
   private lastFrame = 0;
   private animationFrame = 0;
@@ -262,7 +260,7 @@ export class Game {
           const total = worldProgress * 0.82 + kartProgress * 0.18;
           this.hud.setLoadingProgress(total, total >= 0.99 ? "准备起跑" : "加载中");
         };
-        const [loaded] = await Promise.all([
+        await Promise.all([
           this.world.load(track, (progress, hint) => {
             worldProgress = Math.max(worldProgress, progress);
             this.hud.setLoadingProgress(worldProgress * 0.82 + kartProgress * 0.18, hint);
@@ -276,7 +274,6 @@ export class Game {
           return;
         }
         this.kartLoaded = true;
-        this.minimapProjection = loaded.minimap;
         this.currentTrack = track;
         this.hud.setLoadingProgress(1, "准备起跑");
         await sleep(150);
@@ -301,7 +298,7 @@ export class Game {
     this.currentTrack = track;
     this.beginSession(track);
     this.hud.hideLoading();
-    this.hud.show(track, this.minimapProjection);
+    this.hud.show(track);
     this.hud.setMuted(this.audio.isMuted());
     this.kartView.setVisible(true);
     this.resetRaceState(track);
@@ -495,7 +492,8 @@ export class Game {
     if (state.collisionCount !== this.previousCollisionCount) {
       this.previousCollisionCount = state.collisionCount;
       this.hud.setRaceCounts(state.collisionCount, state.nitroCount);
-      this.audio.sfx("collide");
+      this.hud.flashImpact();
+      this.audio.sfx(state.impactSpeed >= 10 ? "crash" : "collide");
     }
 
     const progressDelta = sample.s - this.previousProgress;
@@ -532,10 +530,10 @@ export class Game {
   }
 
   private updateMinimap(state: VehicleState) {
-    const projection = this.minimapProjection;
+    const projection = this.currentTrack?.minimapProjection;
     if (!projection) return;
-    const mapX = 0.5 + (state.x - projection.centerX) * projection.scale / projection.width;
-    const mapY = 0.5 + (-state.z - projection.centerY) * projection.scale / projection.height;
+    const mapX = 128 + (state.x - projection.centerX) * projection.scale;
+    const mapY = 128 + (state.z + projection.centerY) * projection.scale;
     this.hud.setMinimap(mapX, mapY, normalizeAngle(state.yaw));
   }
 
@@ -678,7 +676,7 @@ export class Game {
     if (!track) {
       return;
     }
-    this.hud.show(track, this.minimapProjection);
+    this.hud.show(track);
     this.kartView.resetTrail();
     this.kartView.setVisible(true);
     this.hud.setSpeed(0);

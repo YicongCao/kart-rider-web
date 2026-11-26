@@ -1,6 +1,6 @@
 import "./race-hud.css";
 import type { TrackInfo } from "../types";
-import type { MinimapProjection } from "../game/world";
+import { localRaceAsset } from "../game/local-race-assets";
 import { formatTime } from "../util/format";
 
 export const GRID_SIGNALS = ["开始", "1", "2", "3"] as const;
@@ -39,15 +39,32 @@ export class Hud {
   private root: HTMLElement;
   private actions: HudActions;
   private noticeTimer = 0;
+  private impactTimer = 0;
   private track: TrackInfo | null = null;
   private overview = false;
-  private mapPosition = { x: 0.5, y: 0.5, heading: 0 };
+  private mapPosition = { x: 128, y: 128, heading: 0 };
   private lastSpeed = -1;
 
   constructor(root: HTMLElement, actions: HudActions) {
     this.root = root;
     this.actions = actions;
     this.mount();
+    void localRaceAsset("item-slot.png").then((url) => {
+      if (!url) return;
+      const image = new Image();
+      image.addEventListener("load", () => {
+        const slots = this.query<HTMLElement>(".race-slots");
+        slots?.style.setProperty("--slot-art", `url("${url}")`);
+        slots?.classList.add("has-slot-art");
+      }, { once: true });
+      image.src = url;
+    });
+    void localRaceAsset("minimap-arrow.png").then((url) => {
+      const image = this.query<SVGImageElement>("[data-map-arrow-art]");
+      if (!image || !url) return;
+      image.addEventListener("load", () => image.parentElement?.classList.add("has-arrow-art"), { once: true });
+      image.setAttribute("href", url);
+    });
   }
 
   get touchRoot() {
@@ -76,12 +93,18 @@ export class Hud {
             <button type="button" class="race-map-switch" data-hud-action="map" aria-label="全图模式" aria-pressed="false" title="切换局部地图或全图">M</button>
             <div class="race-map-road">
               <svg data-minimap viewBox="0 0 256 256" preserveAspectRatio="none" role="img" aria-label="">
-                <g data-minimap-road><path data-minimap-path d="" /></g>
+                <defs>
+                  <mask id="race-minimap-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+                    <image data-minimap-image width="256" height="256" />
+                  </mask>
+                </defs>
+                <g data-minimap-road><rect width="256" height="256" mask="url(#race-minimap-mask)" /></g>
               </svg>
             </div>
             <svg class="race-map-arrow" data-minimap-marker viewBox="0 0 62 47" aria-hidden="true">
               <path d="m31 2 28 42-28-11L3 44Z" fill="#b9290b" stroke="#100a08" stroke-width="3" stroke-linejoin="round"/>
               <path d="m31 5 24 35-24-10Z" fill="#812008"/>
+              <image data-map-arrow-art width="62" height="47" />
             </svg>
           </div>
           <div class="race-map-stats"><span>撞击</span><b data-hit-count>0 次</b><span>加速</span><b data-boost-count>0 次</b></div>
@@ -103,6 +126,7 @@ export class Hud {
             <div data-nitro-fill></div>
           </div>
           <div class="race-tacho" data-tacho>
+            <img class="race-impact" src="/assets/ui/tacho_v1_crushBG_2.png" alt="">
             <div class="race-tacho-label">SHIFT</div>
             <div class="race-slip" data-drift-status><i data-slip-fill></i></div>
             <div class="race-boost-keys"><kbd>SPACE</kbd><kbd>CTRL</kbd></div>
@@ -182,22 +206,14 @@ export class Hud {
     this.hideAll();
   }
 
-  show(track: TrackInfo, minimap: MinimapProjection | null) {
+  show(track: TrackInfo) {
     this.track = track;
     const hud = this.query(".hud");
     hud?.classList.remove("is-hidden");
     this.root.classList.add("hud-active");
     const map = this.query<SVGSVGElement>("[data-minimap]");
-    if (map) {
-      const width = minimap?.width ?? 256;
-      const height = minimap?.height ?? 256;
-      map.setAttribute("viewBox", `0 0 ${width} ${height}`);
-      map.setAttribute("aria-label", `${track.name} 地图`);
-      this.query<SVGPathElement>("[data-minimap-path]")?.setAttribute(
-        "d",
-        minimap?.path ?? "",
-      );
-    }
+    map?.setAttribute("aria-label", `${track.name} 地图`);
+    this.query<SVGImageElement>("[data-minimap-image]")?.setAttribute("href", `/assets/${track.minimap}`);
     this.overview = false;
     this.query("[data-race-map]")?.classList.remove("is-overview");
     this.query('[data-hud-action="map"]')?.setAttribute("aria-pressed", "false");
@@ -218,6 +234,7 @@ export class Hud {
     this.setRaceCounts(0, 0);
     this.lastSpeed = -1;
     this.setSpeed(0);
+    this.clearImpact();
     this.setGauge(0, false);
     this.setDrift(false, 0);
     this.setBoost(false);
@@ -307,30 +324,41 @@ export class Hud {
     hud?.classList.toggle("is-boosting", active);
   }
 
+  flashImpact() {
+    this.clearImpact();
+    this.query("[data-tacho]")?.classList.add("is-impact");
+    this.impactTimer = window.setTimeout(() => this.clearImpact(), 240);
+  }
+
+  private clearImpact() {
+    window.clearTimeout(this.impactTimer);
+    this.query("[data-tacho]")?.classList.remove("is-impact");
+  }
+
   setWrongWay(active: boolean) {
     this.query("[data-wrong-way]")?.classList.toggle("is-hidden", !active);
   }
 
-  setMinimap(x: number, y: number, heading: number, visible = true) {
+  setMinimap(x: number, y: number, heading: number) {
     this.mapPosition.x = x;
     this.mapPosition.y = y;
     this.mapPosition.heading = heading;
-    const marker = this.query<HTMLElement>("[data-minimap-marker]");
+    const marker = this.query<SVGSVGElement>("[data-minimap-marker]");
     if (!marker) {
       return;
     }
-    marker.classList.toggle("is-hidden", !visible);
     this.drawMap(marker);
   }
 
-  private drawMap(marker: HTMLElement) {
+  private drawMap(marker: SVGSVGElement) {
     const { x, y, heading } = this.mapPosition;
     const gridHeading = this.track?.startYaw ?? 0;
     const road = this.query<SVGGElement>("[data-minimap-road]");
-    road?.setAttribute("transform", this.overview ? "translate(0 256) scale(1 -1)" :
-      `translate(128 115) scale(-2.8 2.8) rotate(${-gridHeading * 180 / Math.PI}) translate(${-x * 256} ${-y * 256})`);
-    marker.style.left = `${this.overview ? x * 100 : 50}%`;
-    marker.style.top = `${this.overview ? (1 - y) * 100 : 115 / 256 * 100}%`;
+    if (this.overview) road?.removeAttribute("transform");
+    else road?.setAttribute("transform",
+      `translate(128 115) scale(-2.8) rotate(${gridHeading * 180 / Math.PI}) translate(${-x} ${-y})`);
+    marker.style.left = `${this.overview ? x / 256 * 100 : 50}%`;
+    marker.style.top = `${(this.overview ? y : 115) / 256 * 100}%`;
     marker.style.rotate = `${this.overview ? Math.PI - heading : gridHeading - heading}rad`;
   }
 
@@ -451,6 +479,7 @@ export class Hud {
   }
 
   private hideAll() {
+    this.clearImpact();
     for (const selector of [
       "[data-loading]",
       "[data-countdown-layer]",
@@ -469,7 +498,7 @@ export class Hud {
       this.overview = !this.overview;
       this.query("[data-race-map]")?.classList.toggle("is-overview", this.overview);
       this.query('[data-hud-action="map"]')?.setAttribute("aria-pressed", String(this.overview));
-      const marker = this.query<HTMLElement>("[data-minimap-marker]");
+      const marker = this.query<SVGSVGElement>("[data-minimap-marker]");
       if (marker) this.drawMap(marker);
       return;
     }
