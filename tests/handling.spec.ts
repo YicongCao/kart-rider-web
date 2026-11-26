@@ -70,6 +70,64 @@ test("the player can steer out of a head-on impact in either direction", () => {
   }
 });
 
+test("a ramp launches the kart and landing compresses and settles the suspension", () => {
+  const kart = new KartVehicle({
+    speed: 20,
+    groundHeightAt: (_x, z, _progress, height) => {
+      if (z >= 6 && z < 9) return null;
+      const ground = z < 6 ? Math.max(0, z - 1) * 0.18 : 0;
+      return Math.abs(ground - height) < 4 ? ground : null;
+    },
+  });
+  let sawLift = false;
+  let landed = false;
+  let peak = 0;
+  let minimumHeave = 0;
+  let launchYaw = 0;
+  for (let frame = 0; frame < 200; frame++) {
+    const state = kart.step(0.01, sawLift && !landed ? { throttle: 1, steer: 1, drift: true } : {});
+    const ride = state.suspension!;
+    if (!ride.grounded) {
+      if (!sawLift) {
+        sawLift = true;
+        launchYaw = state.yaw;
+        expect(ride.verticalSpeed).toBeGreaterThan(2);
+        expect(ride.pitch).toBeGreaterThan(0.1);
+      }
+      peak = Math.max(peak, state.y);
+      expect(state.yaw).toBeCloseTo(launchYaw, 6);
+      expect(state.gauge).toBe(0);
+      expect(state.drifting).toBe(false);
+    } else if (sawLift) {
+      landed = true;
+      minimumHeave = Math.min(minimumHeave, ride.heave);
+      expect(state.y).toBeCloseTo(0, 4);
+    }
+  }
+  expect(peak).toBeGreaterThan(1.25);
+  expect(landed).toBe(true);
+  expect(minimumHeave).toBeLessThan(-0.03);
+  expect(kart.state.suspension!.heave).toBeCloseTo(0, 3);
+});
+
+test("a one-sided bump articulates the wheels and resets clear the suspension impulse", () => {
+  const kart = new KartVehicle({
+    speed: 8,
+    groundHeightAt: (x, z) => x > 0 ? 0.12 * Math.max(0, 1 - Math.abs(z - 2)) : 0,
+  });
+  let peakRoll = 0;
+  let maxTravelDifference = 0;
+  for (let frame = 0; frame < 60; frame++) {
+    const { suspension } = kart.step(0.01, { throttle: 1 });
+    peakRoll = Math.max(peakRoll, suspension!.roll);
+    maxTravelDifference = Math.max(maxTravelDifference, Math.abs(suspension!.travel[0] - suspension!.travel[1]));
+  }
+  expect(peakRoll).toBeGreaterThan(0.035);
+  expect(maxTravelDifference).toBeGreaterThan(0.04);
+  kart.resetPose(0, 0, 0, 0);
+  expect(kart.state.suspension).toMatchObject({ grounded: true, verticalSpeed: 0, pitch: 0, roll: 0, heave: 0 });
+});
+
 function loadRoute(track: string) {
   const file = new URL(`../public/assets/tracks/${track}/route.json`, import.meta.url);
   return new Route(JSON.parse(readFileSync(file, "utf8")) as RouteData);
@@ -121,6 +179,37 @@ test("the ice landing and wooden bridge entrance clear the front bumper", async 
       y = collision.groundHeight(x, y, z) ?? route.query(x, z, -1, y).y;
       expect(collision.queryWall(x, y, z, yaw, 0.80756, 0.85441)).toBeNull();
     }
+  }
+});
+
+test("the ice ravine is crossed in the air at racing speeds", async () => {
+  const collision = await loadCollision("ice");
+  for (const speed of [38, 50]) {
+    const kart = new KartVehicle({
+      speed,
+      position: { x: 602.88, y: 382.45, z: -1260.01 },
+      yaw: 1.496,
+      groundHeightAt: (x, z, _progress, height, ceiling) => collision.groundHeight(x, height, z, ceiling),
+      wallContactAt: collision.queryWall.bind(collision),
+    });
+    let airborneSteps = 0;
+    let landed = false;
+    let lowestHeave = 0;
+    for (let frame = 0; frame < 90; frame++) {
+      const state = kart.step(0.01, { throttle: 1 });
+      if (!state.suspension!.grounded) {
+        airborneSteps++;
+        if (state.x < 617) expect(state.y).toBeGreaterThan(381.7);
+      } else if (airborneSteps && state.x > 617) {
+        landed = true;
+        lowestHeave = Math.min(lowestHeave, state.suspension!.heave);
+      }
+      if (state.x > 641) break;
+    }
+    expect(airborneSteps).toBeGreaterThan(20);
+    expect(landed).toBe(true);
+    expect(lowestHeave).toBeLessThan(-0.02);
+    expect(kart.state.collisionCount).toBe(0);
   }
 });
 

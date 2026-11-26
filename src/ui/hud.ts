@@ -58,7 +58,7 @@ export class Hud {
     this.root.innerHTML = `
       <section class="hud race-hud is-hidden" aria-label="比赛信息">
         <div class="race-slots" aria-label="道具栏">
-          <i class="race-slot"></i><i class="race-slot race-slot-current" data-item-slot></i>
+          <i class="race-slot"></i><span class="race-slot race-slot-current" data-item-slot role="img" aria-label="空道具栏"><span class="race-nitro-item" aria-hidden="true">N₂O<img alt="" data-nitro-item-art></span></span>
         </div>
         <div class="race-item-tip" data-item-tip hidden><b aria-hidden="true">!</b><span>漂移集气，充满后按 Ctrl 加速</span><small>漂移集气，充满后点按氮气</small></div>
         <div class="race-standing" aria-label="当前排名，第 1 名，共 1 人">
@@ -286,6 +286,13 @@ export class Hud {
     const slot = this.query("[data-item-slot]");
     slot?.classList.toggle("is-ready", ready);
     slot?.setAttribute("aria-label", ready ? "氮气已就绪" : "空道具栏");
+    const itemArt = this.query<HTMLImageElement>("[data-nitro-item-art]");
+    if (ready && itemArt && !itemArt.hasAttribute("src")) {
+      itemArt.addEventListener("load", () => {
+        if (itemArt.naturalWidth > 0) slot?.classList.add("has-item-art");
+      }, { once: true });
+      itemArt.src = "/local-assets/nitro-ready.png";
+    }
   }
 
   setDrift(active: boolean, charge: number) {

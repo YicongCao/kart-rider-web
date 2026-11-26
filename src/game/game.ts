@@ -43,6 +43,7 @@ interface DebugSnapshot {
   lateralSpeed: number;
   lapProgress: number;
   driftPhase: VehicleState["driftPhase"];
+  suspension: VehicleState["suspension"];
 }
 
 const sleep = (milliseconds: number) =>
@@ -98,6 +99,7 @@ export class Game {
   private gridElapsed = 0;
   private countdownBeat = 0;
   private cameraYaw = 0;
+  private cameraRideHeight = 0;
   private cameraTarget = new Vector3();
   private finishAt = 0;
   private debug = false;
@@ -350,16 +352,16 @@ export class Game {
       }
       return { grip: 1, drag: 1, acceleration: 1, driftGauge: 1 };
     };
+    const startHeight = collision.groundHeight(start.p[0], start.p[1], start.p[2]) ?? start.p[1];
     this.vehicle = new KartVehicle({
-      position: { x: start.p[0], y: start.p[1], z: start.p[2] },
+      position: { x: start.p[0], y: startHeight, z: start.p[2] },
       yaw,
       speed: 0,
       startAtSeconds: 0,
       route: localSampler,
       wallContactAt: collision.queryWall.bind(collision),
-      groundHeightAt: (x, z, _progress, height) => collision.groundHeight(x, height, z),
+      groundHeightAt: (x, z, _progress, height, ceiling) => collision.groundHeight(x, height, z, ceiling),
       surfaceAt,
-      followRouteHeight: true,
     });
     this.lapStartTime = 0;
     this.laps = [];
@@ -380,7 +382,7 @@ export class Game {
     const sample = route.query(start.p[0], start.p[2]);
     this.previousProgress = 0;
     this.routeHint = 0;
-    this.lastRacePosition = [...start.p];
+    this.lastRacePosition = [start.p[0], startHeight, start.p[2]];
     this.offCourseSeconds = 0;
     this.progressInitialized = true;
     this.lapArmed = false;
@@ -389,6 +391,7 @@ export class Game {
     this.gridElapsed = 0;
     this.countdownBeat = 0;
     this.cameraYaw = yaw;
+    this.cameraRideHeight = startHeight;
     this.phase = "countdown";
     this.hud.hideCountdown();
     this.updateGridCamera(this.vehicle.state, 0);
@@ -432,6 +435,7 @@ export class Game {
       state = this.vehicle.state;
       this.routeHint = route.warpIndex + 1;
       this.cameraYaw = warp.yaw;
+      this.cameraRideHeight = state.y;
       this.kartView.resetTrail();
     }
     this.lastRacePosition = [state.x, state.y, state.z];
@@ -440,14 +444,16 @@ export class Game {
     // Allow jumps and mesh seams. Recover only after staying beyond the course
     // with no drivable surface under the kart.
     const outside = Math.hypot(state.x - sample.x, state.z - sample.z) > route.halfWidth + 2;
-    this.offCourseSeconds = outside && this.world.collision?.groundHeight(state.x, state.y, state.z) === null
+    const beyondRoad = outside || state.y < sample.y - 5;
+    this.offCourseSeconds = beyondRoad && state.suspension?.surfaceHeight === null
       ? this.offCourseSeconds + delta : 0;
     if (this.offCourseSeconds > 1) {
       this.resetVehicle();
       return;
     }
     this.routeForward = sample.forward;
-    this.kartView.update(state, delta, sample, this.input.snapshot().steer);
+    this.kartView.update(state, delta, sample, this.input.snapshot().steer,
+      this.world.collision?.groundHeight.bind(this.world.collision));
     this.updateChaseCamera(delta, state);
     if (this.countdownBeat && state.time >= START_SIGNAL_SECONDS) {
       this.hud.hideCountdown();
@@ -567,15 +573,18 @@ export class Game {
     const boostFov = mini ? 4 * MathUtils.smoothstep(state.boostRemaining, 0, 0.12) : state.boosting ? 4 : 0;
     const targetFov = 60 + Math.min(6, speed * 0.12) + boostFov;
     const fov = snap ? targetFov : MathUtils.damp(this.world.camera.fov, targetFov, mini ? 9 : 3, delta);
-    this.placeCamera(state, this.cameraYaw, distance, height, this.cameraYaw, 5.4, fov, 0.55);
+    this.cameraRideHeight = snap ? state.y : MathUtils.damp(this.cameraRideHeight, state.y, 12, delta);
+    this.placeCamera(state, this.cameraYaw, distance, height, this.cameraYaw, 5.4, fov, 0.55, 0, this.cameraRideHeight);
   }
 
   private placeCamera(
     state: VehicleState, orbitYaw: number, distance: number, height: number,
     lookYaw: number, lookAhead: number, fov: number, lookHeight: number, leftOffset = 0,
+    anchorY = state.y,
   ) {
     const [forwardX, forwardY, forwardZ] = this.routeForward;
-    const grade = forwardY / Math.max(0.25, forwardX * forwardX + forwardZ * forwardZ);
+    const grade = state.suspension?.grounded === false ? 0 :
+      forwardY / Math.max(0.25, forwardX * forwardX + forwardZ * forwardZ);
     const offsetX = -Math.sin(orbitYaw) * distance;
     const offsetZ = -Math.cos(orbitYaw) * distance;
     const aheadX = Math.sin(lookYaw) * lookAhead + Math.cos(orbitYaw) * leftOffset;
@@ -583,12 +592,14 @@ export class Game {
     const camera = this.world.camera;
     camera.position.set(
       state.x + offsetX,
-      state.y + height + grade * (offsetX * forwardX + offsetZ * forwardZ),
+      anchorY + height + grade * (offsetX * forwardX + offsetZ * forwardZ),
       state.z + offsetZ,
     );
+    const cameraFloor = this.world.collision?.groundHeight(camera.position.x, anchorY, camera.position.z);
+    if (cameraFloor != null) camera.position.y = Math.max(camera.position.y, cameraFloor + 0.45);
     this.cameraTarget.set(
       state.x + aheadX,
-      state.y + lookHeight + grade * (aheadX * forwardX + aheadZ * forwardZ),
+      anchorY + lookHeight + grade * (aheadX * forwardX + aheadZ * forwardZ),
       state.z + aheadZ,
     );
     camera.lookAt(this.cameraTarget);
@@ -697,17 +708,31 @@ export class Game {
     if (!this.vehicle || this.phase !== "racing") {
       return;
     }
-    const route = this.world.route;
-    if (!route) {
+    const { route, collision } = this.world;
+    if (!route || !collision) {
       return;
     }
     const state = this.vehicle.state;
-    const sample = route.query(state.x, state.z, this.routeHint, state.y);
+    let sample = route.query(state.x, state.z, this.routeHint, state.y);
+    let resetHeight = collision.groundHeight(sample.x, sample.y, sample.z);
+    if (resetHeight === null) {
+      for (let offset = 0; offset < route.points.length; offset++) {
+        const index = sample.index - offset;
+        const point = route.pointAt(index);
+        resetHeight = collision.groundHeight(point.p[0], point.p[1], point.p[2]);
+        if (resetHeight !== null) {
+          sample = route.query(point.p[0], point.p[2], index, resetHeight);
+          break;
+        }
+      }
+    }
     const yaw = Math.atan2(sample.forward[0], sample.forward[2]);
-    this.vehicle.resetPose(sample.x, sample.y, sample.z, yaw);
-    this.lastRacePosition = [sample.x, sample.y, sample.z];
+    const height = resetHeight ?? sample.y;
+    this.vehicle.resetPose(sample.x, height, sample.z, yaw);
+    this.lastRacePosition = [sample.x, height, sample.z];
     this.offCourseSeconds = 0;
     this.cameraYaw = yaw;
+    this.cameraRideHeight = height;
     this.previousProgress = sample.s;
     this.routeHint = sample.index;
     this.lapArmed =
@@ -800,6 +825,7 @@ export class Game {
           lateralSpeed: state?.lateralSpeed ?? 0,
           lapProgress: state?.lapProgress ?? 0,
           driftPhase: state?.driftPhase ?? "none",
+          suspension: state?.suspension ?? null,
         };
       },
       startTrack: (id: string) => this.startRace(id),

@@ -24,6 +24,16 @@ The browser build uses assets converted from a local KartRider 1.0 installation 
 
 The conversion scripts used for these files live outside this web project in the parent workspace. Track route files are resampled centerlines derived from the original track road data. The four `minimap.png` files are retained for reference, but the in-game minimap is generated from the route centerline instead.
 
+## 比赛画面素材审查
+
+| 画面元素 | 当前来源 |
+| --- | --- |
+| 道具栏 | 空槽用 CSS 绘制，使用了速度表通用图标。氮气就绪时优先加载本地授权的 `public/local-assets/nitro-ready.png`，缺省显示 N₂O 文字。此目录不纳入 Git，Vite 会将其复制到本地构建。 |
+| 小地图 | 路线根据赛道中心线实时绘制，车头方向箭头由 Web SVG 绘制。 |
+| 广告牌 | 缺贴图的 `ad_*` 材质使用运行时生成的 Canvas 纹理。 |
+| 赛道粒子、车底阴影和轮胎拖痕 | Web 运行时生成。喷气、加速气浪、尾气贴图与加速模糊遮罩的来源见上表。 |
+| 暂停、声音、全屏和底栏导航 | Web 控件使用 SVG 图标。码表、集气条和起跑倒计时使用上表列出的资源。 |
+
 ## Font
 
 `public/assets/fonts/SourceHanSansCN-Bold.otf` is Source Han Sans CN Bold, distributed by Adobe under the SIL Open Font License 1.1.

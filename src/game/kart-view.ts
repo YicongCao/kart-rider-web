@@ -66,16 +66,14 @@ export class KartView {
   private riderActions = new Map<string, AnimationAction>();
   private activeRiderAction: AnimationAction | null = null;
   private handle: Mesh | null = null;
-  private wheels: Array<Mesh | null> = [];
+  private wheels: Array<{ mount: Object3D; restHeight: number; mesh: Mesh } | null> = [];
   private baseMatrices = new Map<Mesh, Matrix4>();
   private wheelSpin = 0;
   private loaded = false;
   private loadPromise: Promise<void> | null = null;
   private shadow: Mesh | null = null;
   private exhaust: KartExhaust | null = null;
-  private previousYaw = 0;
   private roll = 0;
-  private bounce = 0;
   private previousTread = REAR_TIRE_EDGES.map(() => new Vector3());
   private currentTread = REAR_TIRE_EDGES.map(() => new Vector3());
   private trailGeometry = new BufferGeometry();
@@ -95,7 +93,7 @@ export class KartView {
     this.root.rotation.order = "YXZ";
     this.root.visible = false;
     this.shadow = this.createShadow();
-    this.root.add(this.shadow);
+    this.scene.add(this.shadow);
     this.trailMesh = this.createTrail();
     this.scene.add(this.trailMesh);
     this.scene.add(this.root);
@@ -153,10 +151,11 @@ export class KartView {
       const handleNode = rekart.children.find((child) => child.name === "handle");
       this.handle = (handleNode?.children[0] as Mesh | undefined) ?? null;
       this.wheels = ["wheel0", "wheel1", "wheel2", "wheel3"].map((name) => {
-        const wheel = rekart.children.find((child) => child.name === name);
-        return (wheel?.children[0] as Mesh | undefined) ?? null;
+        const mount = rekart.children.find((child) => child.name === name);
+        const mesh = mount?.children[0];
+        return mount && mesh instanceof Mesh ? { mount, restHeight: mount.position.z, mesh } : null;
       });
-      for (const mesh of [this.handle, ...this.wheels]) {
+      for (const mesh of [this.handle, ...this.wheels.map((wheel) => wheel?.mesh)]) {
         if (!mesh) continue;
         mesh.updateMatrix();
         this.baseMatrices.set(mesh, mesh.matrix.clone());
@@ -172,29 +171,37 @@ export class KartView {
     onProgress?.(1);
   }
 
-  update(state: VehicleState, dt: number, sample: RouteSample, steer = 0) {
+  update(state: VehicleState, dt: number, sample: RouteSample, steer = 0,
+    groundHeight?: (x: number, y: number, z: number) => number | null) {
     if (!this.loaded) {
       return;
     }
-    this.root.position.set(state.x, state.y + 0.015, state.z);
-
-    this.roadNormal.fromArray(sample.up).normalize();
+    const suspension = state.suspension;
+    this.root.position.set(state.x, state.y + 0.015 + (suspension?.heave ?? 0), state.z);
+    if (suspension) this.roadNormal.set(0, 1, 0);
+    else this.roadNormal.fromArray(sample.up).normalize();
     this.bodyXAxis.set(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
     this.bodyForward.crossVectors(this.bodyXAxis, this.roadNormal).normalize();
     this.bodyXAxis.crossVectors(this.roadNormal, this.bodyForward).normalize();
     this.bodyBasis.makeBasis(this.bodyXAxis, this.roadNormal, this.bodyForward);
     this.root.quaternion.setFromRotationMatrix(this.bodyBasis);
 
-    const yawDelta = normalizeAngle(state.yaw - this.previousYaw);
-    this.previousYaw = state.yaw;
-    const targetRoll = Math.max(-0.15, Math.min(0.15, -yawDelta * 3.4 - state.lateralSpeed * 0.012));
-    this.roll += (targetRoll - this.roll) * Math.min(1, dt * 8);
-    this.model.rotation.z = this.roll;
-
-    const targetBounce =
-      state.drifting ? Math.sin(performance.now() * 0.022) * 0.015 : 0;
-    this.bounce += (targetBounce - this.bounce) * Math.min(1, dt * 12);
-    this.model.position.y = this.bounce;
+    const targetRoll = suspension?.grounded === false ? 0 :
+      Math.max(-0.11, Math.min(0.11, -state.lateralSpeed * 0.009));
+    this.roll += (targetRoll - this.roll) * (1 - Math.exp(-8 * dt));
+    this.model.rotation.x = -(suspension?.pitch ?? 0);
+    this.model.rotation.z = this.roll + (suspension?.roll ?? 0);
+    if (this.shadow) {
+      const surfaceHeight = suspension ? suspension.surfaceHeight : state.y;
+      this.shadow.visible = this.root.visible && surfaceHeight !== null;
+      if (surfaceHeight !== null) {
+        this.shadow.position.set(state.x, surfaceHeight + 0.022, state.z);
+        this.shadow.rotation.z = state.yaw;
+        const altitude = Math.max(0, state.y - surfaceHeight);
+        this.shadow.scale.setScalar(1 + altitude * 0.16);
+        (this.shadow.material as MeshBasicMaterial).opacity = 0.9 / (1 + altitude * 0.8);
+      }
+    }
 
     this.updateRider(state, steer, dt);
     this.wheelSpin = (this.wheelSpin + Math.abs(state.speed) * dt * 3.2) % (Math.PI * 2);
@@ -206,11 +213,12 @@ export class KartView {
     this.wheels.forEach((wheel, index) => {
       if (!wheel) return;
       const rotation = index < 2 ? steerRotation.clone().multiply(spinRotation) : spinRotation;
-      this.applyPartRotation(wheel, rotation);
+      wheel.mount.position.z = wheel.restHeight + (suspension?.travel[index] ?? 0);
+      this.applyPartRotation(wheel.mesh, rotation);
     });
 
     this.updateExhaust(state, dt);
-    this.updateTrail(state);
+    this.updateTrail(state, groundHeight);
   }
 
   updateExhaust(state: VehicleState, dt: number) {
@@ -227,6 +235,7 @@ export class KartView {
 
   setVisible(visible: boolean) {
     this.root.visible = visible && this.loaded;
+    if (!visible && this.shadow) this.shadow.visible = false;
     if (!visible) this.exhaust?.reset();
   }
 
@@ -262,6 +271,13 @@ export class KartView {
   dispose() {
     this.scene.remove(this.root);
     this.scene.remove(this.trailMesh);
+    if (this.shadow) {
+      this.scene.remove(this.shadow);
+      this.shadow.geometry.dispose();
+      const material = this.shadow.material as MeshBasicMaterial;
+      material.map?.dispose();
+      material.dispose();
+    }
     this.trailGeometry.dispose();
     (this.trailMesh.material as MeshBasicMaterial).dispose();
     this.exhaust?.dispose();
@@ -330,7 +346,7 @@ export class KartView {
       }),
     );
     mesh.rotation.x = -Math.PI / 2;
-    mesh.position.y = 0.03;
+    mesh.visible = false;
     mesh.renderOrder = 2;
     return mesh;
   }
@@ -353,15 +369,25 @@ export class KartView {
     return mesh;
   }
 
-  private updateTrail(state: VehicleState) {
-    if (!state.drifting || Math.abs(state.speed) < 4) {
+  private updateTrail(state: VehicleState, groundHeight?: (x: number, y: number, z: number) => number | null) {
+    if (!state.drifting || state.suspension?.grounded === false || Math.abs(state.speed) < 4) {
       this.trailStarted = false;
       return;
     }
 
     for (const [index, edge] of REAR_TIRE_EDGES.entries()) {
-      this.currentTread[index].set(edge, 0.03, -0.50)
+      const tread = this.currentTread[index].set(edge, 0, -0.50)
         .applyQuaternion(this.root.quaternion).add(this.root.position);
+      if (groundHeight) {
+        const height = groundHeight(tread.x, state.y, tread.z);
+        if (height === null) {
+          this.trailStarted = false;
+          return;
+        }
+        tread.y = height + 0.025;
+      } else {
+        tread.y += 0.03;
+      }
     }
     if (this.trailStarted) {
       if (this.previousTread[0].distanceToSquared(this.currentTread[0]) < 0.12 ** 2) return;
@@ -382,11 +408,4 @@ export class KartView {
     [this.previousTread, this.currentTread] = [this.currentTread, this.previousTread];
     this.trailStarted = true;
   }
-}
-
-function normalizeAngle(value: number) {
-  let angle = value % (Math.PI * 2);
-  if (angle > Math.PI) angle -= Math.PI * 2;
-  if (angle < -Math.PI) angle += Math.PI * 2;
-  return angle;
 }

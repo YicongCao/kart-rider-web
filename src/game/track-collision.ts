@@ -92,20 +92,20 @@ export class TrackCollision {
   }
 
   /** Select the deck closest to the kart's current height at crossings. */
-  groundHeight(x: number, y: number, z: number): number | null {
+  groundHeight(x: number, y: number, z: number, ceiling = Infinity): number | null {
     const cell = this.columns.get(cellAt(x))?.get(cellAt(z));
     if (!cell) return null;
     let height: number | null = null;
     let nearest = 4;
     for (const { triangle: { a, b, c }, normal, minY, maxY } of cell.ground) {
-      if (minY > y + nearest || maxY < y - nearest) continue;
+      if (minY > Math.min(y + nearest, ceiling) || maxY < y - nearest) continue;
       const ab = (b.x - a.x) * (z - a.z) - (b.z - a.z) * (x - a.x);
       const bc = (c.x - b.x) * (z - b.z) - (c.z - b.z) * (x - b.x);
       const ca = (a.x - c.x) * (z - c.z) - (a.z - c.z) * (x - c.x);
       if (Math.min(ab, bc, ca) < -1e-7 && Math.max(ab, bc, ca) > 1e-7) continue;
       const surfaceY = a.y - (normal.x * (x - a.x) + normal.z * (z - a.z)) / normal.y;
       const delta = Math.abs(surfaceY - y);
-      if (delta < nearest) {
+      if (surfaceY <= ceiling && delta < nearest) {
         height = surfaceY;
         nearest = delta;
       }

@@ -1,8 +1,7 @@
 /**
  * Deterministic fixed-step kart simulator.
  *
- * This module deliberately has no Three.js or DOM dependencies. All motion is
- * planar (X/Z); `y` is supplied by an optional ground-height or route sampler.
+ * This module deliberately has no Three.js or DOM dependencies.
  *
  * World convention:
  *   forward = (sin(yaw), 0, cos(yaw))
@@ -13,6 +12,7 @@
  */
 
 import type { TrackWallContact } from "./track-collision";
+import { KartSuspension } from "./suspension";
 
 export const FIXED_STEP_SECONDS = 0.002;
 
@@ -36,6 +36,17 @@ export interface VehicleState {
   x: number;
   y: number;
   z: number;
+  suspension: {
+    grounded: boolean;
+    frontContact: number;
+    rearContact: number;
+    verticalSpeed: number;
+    surfaceHeight: number | null;
+    pitch: number;
+    roll: number;
+    heave: number;
+    travel: number[];
+  } | null;
   /** Radians. Wrapped to (-PI, PI]. */
   yaw: number;
   /** Signed forward speed in m/s (negative while reversing). */
@@ -354,9 +365,9 @@ export interface VehicleOptions {
   route?: RouteSampler | null;
   /** Road surface query, called once per 2 ms substep. */
   surfaceAt?: SurfaceSampler | null;
-  /** Optional ground height. Wins over route height. */
+  /** Wheel and chassis ground probe. Enables suspension and airborne motion. */
   groundHeightAt?: ((
-    x: number, z: number, progress: number, previousHeight: number,
+    x: number, z: number, progress: number, previousHeight: number, ceiling: number,
   ) => number | null) | null;
   /** Deepest overlapping track wall, sampled at the kart's footprint centre. */
   wallContactAt?: ((
@@ -364,7 +375,7 @@ export interface VehicleOptions {
   ) => TrackWallContact | null) | null;
   /** Constant or callback half-width for courses without collision geometry. */
   roadHalfWidth?: number | RoadHalfWidthSampler | null;
-  /** Follow the attached route's interpolated Y. Default true. */
+  /** Follow route height when running without a ground probe. Default true. */
   followRouteHeight?: boolean;
 }
 
@@ -419,7 +430,8 @@ export class KartVehicle {
   private elapsedSeconds: number;
   private routeValue: RouteSampler | null;
   private surfaceSampler: SurfaceSampler | null;
-  private groundHeightSampler: NonNullable<VehicleOptions["groundHeightAt"]> | null;
+  private readonly probeGround: ((x: number, z: number, height: number, ceiling: number) => number | null) | null;
+  private readonly suspension: KartSuspension | null;
   private readonly wallContactAt: NonNullable<VehicleOptions["wallContactAt"]> | null;
   private halfWidthSampler: RoadHalfWidthSampler | null;
   private followRouteHeightValue: boolean;
@@ -464,7 +476,11 @@ export class KartVehicle {
     this.elapsedSeconds = 0;
     this.routeValue = options.route ?? null;
     this.surfaceSampler = options.surfaceAt ?? null;
-    this.groundHeightSampler = options.groundHeightAt ?? null;
+    const groundHeightAt = options.groundHeightAt;
+    this.probeGround = groundHeightAt
+      ? (x, z, height, ceiling) => groundHeightAt(x, z, this.routeProgress, height, ceiling)
+      : null;
+    this.suspension = this.probeGround ? new KartSuspension() : null;
     this.wallContactAt = options.wallContactAt ?? null;
     this.halfWidthSampler =
       typeof options.roadHalfWidth === "function"
@@ -480,6 +496,7 @@ export class KartVehicle {
     this.lapProgressValue = 0;
     this.lapValue = 0;
     this.lateralOffsetValue = 0;
+    this.resetSuspension();
   }
 
   get tuning(): Readonly<VehicleTuning> {
@@ -488,10 +505,22 @@ export class KartVehicle {
 
   get state(): VehicleState {
     const gaugeTotal = this.committedGauge + this.pendingGauge;
+    const suspension = this.suspension;
     return {
       x: this.x,
       y: this.y,
       z: this.z,
+      suspension: suspension && {
+        grounded: suspension.grounded,
+        frontContact: suspension.frontContact,
+        rearContact: suspension.rearContact,
+        verticalSpeed: suspension.verticalSpeed,
+        surfaceHeight: suspension.surfaceHeight,
+        pitch: suspension.pitch.value,
+        roll: suspension.roll.value,
+        heave: suspension.heave.value,
+        travel: suspension.travel(),
+      },
       yaw: this.yawValue,
       speed: this.forwardSpeed,
       lateralSpeed: this.lateralVelocity,
@@ -551,6 +580,11 @@ export class KartVehicle {
     this.routeSample = null;
     this.previousRouteProgress = this.routeProgress;
     this.lateralOffsetValue = 0;
+    this.resetSuspension();
+  }
+
+  private resetSuspension() {
+    this.suspension?.reset(this.probeGround?.(this.x, this.z, this.y, this.y + 0.08) ?? null);
   }
 
   setRoadHalfWidth(
@@ -603,10 +637,14 @@ export class KartVehicle {
     const driftChord = driftHeld && Math.abs(steerTarget) > 0.05;
     const driftEdge = driftChord && !this.previousDriftChord;
     const boostEdge = boostHeld && !this.previousBoostDown;
+    const grounded = this.suspension?.grounded ?? true;
+    const frontContact = this.suspension?.frontContact ?? 1;
+    const rearContact = this.suspension?.rearContact ?? 1;
+    const tireContact = (frontContact + rearContact) / 2;
 
     const surface =
       this.surfaceSampler?.(this.x, this.z, this.routeProgress) ?? {};
-    const gripMultiplier = Math.max(0, finiteOr(surface.grip, 1));
+    const gripMultiplier = grounded ? Math.max(0, finiteOr(surface.grip, 1)) : 0;
     const dragMultiplier = Math.max(0, finiteOr(surface.drag, 1));
     const accelerationMultiplier = Math.max(
       0,
@@ -627,7 +665,7 @@ export class KartVehicle {
     }
 
     if (!throttleDown && this.boostKind === "drift") this.endBoost();
-    this.updateDriftState(driftChord, driftEdge, steerTarget, partialStep);
+    if (grounded) this.updateDriftState(driftChord, driftEdge, steerTarget, partialStep);
     if (this.forwardSpeed < this.configuration.driftStopSpeed) {
       this.miniBoostWindowUntil = -Infinity;
     }
@@ -713,13 +751,16 @@ export class KartVehicle {
       }
     }
 
+    frontForce *= frontContact;
+    rearForce *= rearContact;
     const driveForce = sliding ? spec.driftEscapeForce : spec.forwardAccel;
     // On the original C1 a mini pulls from 65 to 107 km/h in 0.44 s.
     // Its stock thrust matches the recording without the cruise calibration.
     const driveScale = this.boostKind === "drift" ? 1 : spec.driveScale;
-    let forwardForce = driveForce * driveScale * throttle * boostMultiplier * accelerationMultiplier;
-    if (brake > 0) {
-      forwardForce -= (this.forwardSpeed > 0.5 ? spec.gripBrake : spec.backwardAccel) * brake;
+    const driveContact = boostActive ? 1 : rearContact;
+    let forwardForce = driveForce * driveScale * throttle * boostMultiplier * accelerationMultiplier * driveContact;
+    if (grounded && brake > 0) {
+      forwardForce -= (this.forwardSpeed > 0.5 ? spec.gripBrake : spec.backwardAccel) * brake * tireContact;
     }
     // Drag uses the world velocity magnitude and acts along both components.
     const drag = spec.airFriction + speed * spec.dragFactor * dragMultiplier;
@@ -742,7 +783,7 @@ export class KartVehicle {
         (spec.yawDamping - spec.straightYawDamping) * Math.abs(steerTarget);
       this.yawRate *= Math.exp(-damping * gripMultiplier * partialStep);
     }
-    if (speed < 0.15 && throttle === 0 && brake === 0) {
+    if (grounded && speed < 0.15 && throttle === 0 && brake === 0) {
       this.forwardSpeed = 0;
       this.lateralVelocity = 0;
       this.yawRate = 0;
@@ -773,10 +814,10 @@ export class KartVehicle {
       (forwardZ * this.forwardSpeed + rightZ * this.lateralVelocity) *
       partialStep;
 
-    if (active || this.driftPhaseValue === "decay" ||
-        (this.driftPhaseValue === "trigger" && !trigger)) {
+    if (grounded && (active || this.driftPhaseValue === "decay" ||
+        (this.driftPhaseValue === "trigger" && !trigger))) {
       this.fillDriftGauge(
-        driftGaugeMultiplier,
+        driftGaugeMultiplier * tireContact,
         partialStep,
       );
     }
@@ -968,9 +1009,9 @@ export class KartVehicle {
         }
       }
     }
-    const height = this.groundHeightSampler?.(this.x, this.z, this.routeProgress, this.y);
-    if (typeof height === "number" && Number.isFinite(height)) {
-      this.y = height;
+    if (this.suspension && this.probeGround) {
+      this.y = this.suspension.step(this.x, this.y, this.z, this.yawValue,
+        this.forwardSpeed, this.lateralVelocity, this.probeGround, FIXED_STEP_SECONDS);
     } else if (this.routeSample && this.followRouteHeightValue) {
       this.y = this.routeSample.y;
     }
