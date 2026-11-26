@@ -75,7 +75,7 @@ export class AudioManager {
     this.menuMusic.currentTime = 0;
     if (this.raceMusic.dataset.source !== musicUrl) {
       this.raceMusic.pause();
-      this.raceMusic.src = musicUrl;
+      this.raceMusic.src = `/assets/${musicUrl}`;
       this.raceMusic.dataset.source = musicUrl;
       this.raceMusic.currentTime = 0;
     }
@@ -137,7 +137,7 @@ export class AudioManager {
   }
 
   private createLoop(source: string, volume: number) {
-    const audio = new Audio(source);
+    const audio = source ? new Audio(source) : new Audio();
     audio.loop = true;
     audio.preload = "auto";
     audio.volume = volume;

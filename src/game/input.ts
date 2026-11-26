@@ -93,6 +93,13 @@ export class InputController {
   };
 
   private onKeyDown = (event: KeyboardEvent) => {
+    const target = event.target;
+    if (event.defaultPrevented || event.isComposing) return;
+    if (target instanceof HTMLElement) {
+      if (target.isContentEditable || target.closest("input, textarea, select")) return;
+      const activatesControl = event.code === "Enter" || event.code === "Space";
+      if (activatesControl && target.closest("button, a[href]")) return;
+    }
     if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === "ControlLeft") {
       event.preventDefault();
     }

@@ -11,13 +11,13 @@ import {
   type VehicleState,
 } from "./vehicle";
 import { Menu } from "../ui/menu";
-import { Hud, type RaceResult } from "../ui/hud";
+import { GRID_SIGNALS, Hud, type RaceResult } from "../ui/hud";
 import { formatTime } from "../util/format";
 
 const TOTAL_LAPS = 2;
 const RECORD_KEY = "kart-rider-remake.records.v1";
-const GRID_INTRO_SECONDS = 3;
-const COUNTDOWN_SECONDS = 3;
+const GRID_INTRO_SECONDS = 3.6;
+const START_SIGNAL_SECONDS = 1.3;
 
 interface StoredRecords {
   [trackId: string]: TrackRecord;
@@ -83,8 +83,8 @@ export class Game {
   private wrongWay = false;
   private previousBoostCount = 0;
   private previousGauge = 0;
-  private collisionCooldown = 0;
-  private previousSpeed = 0;
+  private previousCollisionCount = 0;
+  private nitroUses = 0;
   private kartLoaded = false;
   private gridElapsed = 0;
   private countdownBeat = 0;
@@ -97,7 +97,6 @@ export class Game {
     this.canvas = canvas;
     this.menuRoot = menuRoot;
     this.gameUiRoot = gameUiRoot;
-    this.audio = new AudioManager();
     this.world = new RaceWorld(canvas);
     this.kartView = new KartView(this.world.scene);
     this.input = new InputController(this.onAction);
@@ -122,6 +121,7 @@ export class Game {
     this.input.bindTouch(this.hud.touchRoot ?? gameUiRoot);
     window.addEventListener("pointerdown", this.unlockAudio, { once: true });
     document.addEventListener("visibilitychange", () => {
+      this.lastFrame = performance.now();
       if (document.hidden && this.phase === "racing") {
         this.pause();
       }
@@ -167,11 +167,12 @@ export class Game {
 
   private frame = (now: number) => {
     this.animationFrame = requestAnimationFrame(this.frame);
-    const rawDelta = this.lastFrame > 0 ? Math.min(0.1, (now - this.lastFrame) / 1000) : 0;
+    const elapsed = this.lastFrame > 0 ? Math.max(0, (now - this.lastFrame) / 1000) : 0;
+    const rawDelta = Math.min(0.1, elapsed);
     this.lastFrame = now;
-    this.collisionCooldown = Math.max(0, this.collisionCooldown - rawDelta);
 
     if (this.phase === "menu" || this.phase === "loading") {
+      this.audio.update(rawDelta, 0, false, false, false);
       return;
     }
 
@@ -190,7 +191,8 @@ export class Game {
       this.audio.update(rawDelta, 0, false, false, false);
     } else if (this.phase === "countdown" && this.vehicle) {
       this.audio.update(rawDelta, 0, false, false, false);
-      if (!document.hidden) this.updateGrid(rawDelta);
+      // Keep beats in real time on slower GPUs, while still presenting each number after a stall.
+      if (!document.hidden) this.updateGrid(Math.min(1, elapsed));
     }
 
     if (this.phase === "racing" && this.vehicle) {
@@ -347,12 +349,12 @@ export class Game {
     this.bestLap = Number.POSITIVE_INFINITY;
     this.previousBoostCount = 0;
     this.previousGauge = 0;
-    this.previousSpeed = 0;
+    this.previousCollisionCount = 0;
+    this.nitroUses = 0;
     this.routeForward = [start.f[0], start.f[1], start.f[2]];
     this.wrongWay = false;
     this.hud.setLap(1, TOTAL_LAPS);
     this.hud.setTime(0);
-    this.hud.setLapTime(0);
     this.hud.setGauge(0, false);
     this.hud.setDrift(false, 0);
     this.hud.setWrongWay(false);
@@ -376,14 +378,14 @@ export class Game {
   private updateGrid(delta: number) {
     if (!this.vehicle) return;
     this.gridElapsed += delta;
-    const remaining = GRID_INTRO_SECONDS + COUNTDOWN_SECONDS - this.gridElapsed;
+    const remaining = GRID_INTRO_SECONDS + 3 - this.gridElapsed;
     this.updateGridCamera(this.vehicle.state, Math.min(1, this.gridElapsed / GRID_INTRO_SECONDS));
-    if (remaining > COUNTDOWN_SECONDS) return;
+    if (this.gridElapsed < GRID_INTRO_SECONDS) return;
     if (remaining > 0) {
       const beat = Math.ceil(remaining);
       if (beat !== this.countdownBeat) {
         this.countdownBeat = beat;
-        this.hud.showCountdown(String(beat));
+        this.hud.showCountdown(GRID_SIGNALS[beat]);
         this.audio.sfx("countdown");
       }
       return;
@@ -391,7 +393,7 @@ export class Game {
     this.phase = "racing";
     this.vehicle.setStartAt(0);
     this.vehicle.primeThrottleHeld(this.input.snapshot().throttle);
-    this.hud.showCountdown("GO!");
+    this.hud.showCountdown("开始");
     this.audio.sfx("start");
   }
 
@@ -408,14 +410,14 @@ export class Game {
     this.routeForward = sample.forward;
     this.kartView.update(state, delta, sample, this.input.snapshot().steer);
     this.updateChaseCamera(delta, state);
-    if (this.countdownBeat && state.time >= 0.76) {
+    if (this.countdownBeat && state.time >= START_SIGNAL_SECONDS) {
       this.hud.hideCountdown();
+      this.hud.setGridPreview(false);
       this.countdownBeat = 0;
     }
 
     const timeMs = state.time * 1000;
     this.hud.setTime(timeMs);
-    this.hud.setLapTime((state.time - this.lapStartTime) * 1000);
     this.hud.setSpeed(Math.abs(state.speed) * 3.6);
     this.hud.setGauge(state.gauge, state.gauge >= 0.999);
     this.hud.setDrift(state.drifting, state.gauge);
@@ -434,7 +436,12 @@ export class Game {
     if (state.boostCount > this.previousBoostCount) {
       const wasStartBoost = state.boostCount === 1 && state.boosting && state.time < 1.2;
       this.audio.sfx(wasStartBoost ? "boostDrift" : "booster");
-      if (wasStartBoost) this.hud.notice("完美起步", 1300);
+      if (wasStartBoost) {
+        this.hud.notice("完美起步", 1300);
+      } else {
+        this.nitroUses++;
+        this.hud.setRaceCounts(state.collisionCount, this.nitroUses);
+      }
     }
     this.previousBoostCount = state.boostCount;
 
@@ -443,15 +450,11 @@ export class Game {
     }
     this.previousGauge = state.gauge;
 
-    if (
-      this.collisionCooldown <= 0 &&
-      this.previousSpeed - state.speed > 2.5 &&
-      Math.abs(state.lateralOffset) > route.halfWidth - 2.5
-    ) {
+    if (state.collisionCount !== this.previousCollisionCount) {
+      this.previousCollisionCount = state.collisionCount;
+      this.hud.setRaceCounts(state.collisionCount, this.nitroUses);
       this.audio.sfx("collide");
-      this.collisionCooldown = 0.45;
     }
-    this.previousSpeed = state.speed;
 
     const progressDelta = sample.s - this.previousProgress;
     if (
@@ -475,6 +478,7 @@ export class Game {
       const lapTime = state.time - this.lapStartTime;
       this.laps.push(lapTime);
       this.bestLap = Math.min(this.bestLap, lapTime);
+      this.hud.setBestLap(this.bestLap * 1000);
       this.lapStartTime = state.time;
       if (this.currentLap >= TOTAL_LAPS) {
         this.finishRace(timeMs);
@@ -494,44 +498,50 @@ export class Game {
   }
 
   private updateGridCamera(state: VehicleState, progress: number) {
-    const cut = 1 / 3;
-    if (progress < cut) {
-      const approach = progress / cut;
-      this.placeCamera(state, state.yaw - 0.15, 21 - 5 * approach, 8 - 2 * approach,
-        state.yaw, 5, 58);
+    if (progress >= 1) {
+      this.updateChaseCamera(0, state, true);
       return;
     }
-    const sweep = MathUtils.smootherstep(progress, cut, 1);
-    const yaw = state.yaw + (1 - sweep) * 2.35;
-    const distance = MathUtils.lerp(7.1, 7.6, sweep);
-    const height = 3.1 + 1.4 * (1 - sweep) + 1.5 * Math.sin(Math.PI * sweep);
-    const lookAhead = MathUtils.lerp(0, 5.4, sweep);
-    this.placeCamera(state, yaw, distance, height, state.yaw, lookAhead, 51 + 9 * sweep);
+    // The grid shot descends in front of the driver, then cuts directly to the chase camera.
+    const descent = MathUtils.smootherstep(progress, 0, 0.78);
+    const push = MathUtils.smootherstep(progress, 0.18, 0.96);
+    const arc = Math.sin(Math.PI * progress);
+    const angle = state.yaw + Math.PI - 0.32 * arc;
+    const aspect = this.world.camera.aspect;
+    const fov = MathUtils.lerp(43, 37.5, push);
+    // Preserve the close-up's horizontal framing on portrait screens.
+    const framing = Math.max(1, 0.68 / aspect);
+    const portraitFov = MathUtils.radToDeg(2 * Math.atan(Math.tan(MathUtils.degToRad(fov / 2)) * framing));
+    this.placeCamera(
+      state, angle, MathUtils.lerp(6.5, 4.4, push), MathUtils.lerp(7.1, 1.65, descent),
+      state.yaw, 0, portraitFov, MathUtils.lerp(0.85, 0.73, descent),
+      0.88 * arc * MathUtils.smoothstep(aspect, 0.6, 1.4),
+    );
   }
 
-  private updateChaseCamera(delta: number, state: VehicleState) {
+  private updateChaseCamera(delta: number, state: VehicleState, snap = false) {
     const speed = Math.abs(state.speed);
     const slip = Math.atan2(state.lateralSpeed, Math.max(state.speed, 1));
     const travelYaw = state.yaw + MathUtils.clamp(slip, -0.9, 0.9) * MathUtils.smoothstep(state.speed, 1, 6);
     const yawError = normalizeAngle(travelYaw - this.cameraYaw);
     this.cameraYaw = normalizeAngle(this.cameraYaw + yawError * (1 - Math.exp(-5.5 * delta)));
-    const distance = 7.6 + Math.min(1.8, speed * 0.028);
-    const height = 3.1 + Math.min(0.5, speed * 0.005);
-    const targetFov = 60 + Math.min(10, speed * 0.17) + (state.boosting ? 4 : 0);
-    const fov = MathUtils.damp(this.world.camera.fov, targetFov, 3, delta);
-    this.placeCamera(state, this.cameraYaw, distance, height, this.cameraYaw, 5.4, fov);
+    const distance = 6.6 + Math.min(0.65, speed * 0.013);
+    const height = 2.8 + Math.min(0.3, speed * 0.005);
+    const targetFov = 60 + Math.min(6, speed * 0.12) + (state.boosting ? 4 : 0);
+    const fov = snap ? targetFov : MathUtils.damp(this.world.camera.fov, targetFov, 3, delta);
+    this.placeCamera(state, this.cameraYaw, distance, height, this.cameraYaw, 5.4, fov, 0.55);
   }
 
   private placeCamera(
     state: VehicleState, orbitYaw: number, distance: number, height: number,
-    lookYaw: number, lookAhead: number, fov: number,
+    lookYaw: number, lookAhead: number, fov: number, lookHeight: number, leftOffset = 0,
   ) {
     const [forwardX, forwardY, forwardZ] = this.routeForward;
     const grade = forwardY / Math.max(0.25, forwardX * forwardX + forwardZ * forwardZ);
     const offsetX = -Math.sin(orbitYaw) * distance;
     const offsetZ = -Math.cos(orbitYaw) * distance;
-    const aheadX = Math.sin(lookYaw) * lookAhead;
-    const aheadZ = Math.cos(lookYaw) * lookAhead;
+    const aheadX = Math.sin(lookYaw) * lookAhead + Math.cos(orbitYaw) * leftOffset;
+    const aheadZ = Math.cos(lookYaw) * lookAhead - Math.sin(orbitYaw) * leftOffset;
     const camera = this.world.camera;
     camera.position.set(
       state.x + offsetX,
@@ -540,7 +550,7 @@ export class Game {
     );
     this.cameraTarget.set(
       state.x + aheadX,
-      state.y + 1.05 + grade * (aheadX * forwardX + aheadZ * forwardZ),
+      state.y + lookHeight + grade * (aheadX * forwardX + aheadZ * forwardZ),
       state.z + aheadZ,
     );
     camera.lookAt(this.cameraTarget);
@@ -676,7 +686,7 @@ export class Game {
       this.toggleMute();
     } else if (action === "confirm") {
       if (this.phase === "menu") {
-        void this.startRace(this.menu.getSelectedId());
+        this.menu.confirm();
       } else if (this.phase === "finished") {
         void this.restart();
       } else if (this.phase === "paused") {

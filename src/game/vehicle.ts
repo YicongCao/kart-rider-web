@@ -45,6 +45,7 @@ export interface VehicleState {
   drifting: boolean;
   driftPhase: DriftPhase;
   boostCount: number;
+  collisionCount: number;
   /** Distance along the course in metres, when a route is attached. */
   progress: number;
   /** progress / route length, in 0..1. */
@@ -380,6 +381,8 @@ export class KartVehicle {
   private boostRemainingValue: number;
   private boostKind: "none" | "start" | "nitro";
   private boostActivations: number;
+  private collisionCount = 0;
+  private lastImpact = -Infinity;
   private startBoostConsumed: boolean;
   private startAtSecondsValue: number | null;
   private previousThrottleDown: boolean;
@@ -472,6 +475,7 @@ export class KartVehicle {
       drifting: this.driftPhaseValue !== "none",
       driftPhase: this.driftPhaseValue,
       boostCount: this.boostActivations,
+      collisionCount: this.collisionCount,
       progress: this.routeProgress,
       lapProgress: this.lapProgressValue,
       lap: this.lapValue,
@@ -994,6 +998,10 @@ export class KartVehicle {
     let velocityZ =
       forwardZ * this.forwardSpeed + rightZ * this.lateralVelocity;
     const normalVelocity = velocityX * normalX + velocityZ * normalZ;
+    if (normalVelocity > 2.5 && this.elapsedSeconds - this.lastImpact > 0.45) {
+      this.collisionCount++;
+      this.lastImpact = this.elapsedSeconds;
+    }
     if (normalVelocity > 0) {
       const restitution = this.configuration.wallRestitution;
       velocityX -= normalX * normalVelocity * (1 + restitution);

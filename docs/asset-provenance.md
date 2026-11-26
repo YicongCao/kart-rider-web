@@ -13,6 +13,9 @@ The browser build uses assets converted from a local KartRider 1.0 installation 
 | `public/assets/characters/dao/` | `character_dao/model.1s` | Character mesh and textures to glTF |
 | `public/assets/karts/cotton1/` | `DataPack2_00007/kart_/cotton1/model.1s` | Kart mesh and textures to glTF |
 | `public/assets/ui/` | KartRider 1.0 UI archive | PNG images |
+| `public/assets/ui/countdown/` | `stage_speedIndiGame.rho/s_03@cn.png` | Four 250×98 frames from the Chinese start-signal atlas, with their original alpha and alignment |
+| `public/assets/ui/race/` | `gui_tachometer/v1_exceed/` | Original speedometer plates, digits, indicators and nitro gauge |
+| `public/assets/ui/lobby/` | P3563 `myRoom.rho/2026_Face-lift_main` tomb courtyard and local field captures of the lobby, time-trial menus and practice room | Projected courtyard scenery, rider, kart and menu illustrations exported to WebP |
 | `public/assets/audio/` | KartRider 1.0 sound archive | Ogg Vorbis |
 
 The conversion scripts used for these files live outside this web project in the parent workspace. Track route files are resampled centerlines derived from the original track road data. The four `minimap.png` files are retained for reference, but the in-game minimap is generated from the route centerline instead.
