@@ -1,0 +1,24 @@
+{
+  "id": "desert",
+  "name": "沙漠旋转工地",
+  "theme": "沙漠",
+  "accent": "#d69242",
+  "difficulty": 2,
+  "music": "tracks/desert/music.ogg",
+  "card": "tracks/desert/card.png",
+  "thumb": "tracks/desert/thumb.png",
+  "minimap": "tracks/desert/minimap.png",
+  "scene": "tracks/desert/track.gltf",
+  "sky": "tracks/desert/sky.gltf",
+  "route": "tracks/desert/route.json",
+  "start": [
+    734.3512,
+    33.2022,
+    -156.6008
+  ],
+  "startYaw": -1.57104,
+  "skyColor": "#f0bd7d",
+  "fogColor": "#d9b37e",
+  "halfWidth": 17.5,
+  "length": 4142.13
+}

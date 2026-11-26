@@ -1,0 +1,24 @@
+{
+  "id": "forest",
+  "name": "森林发夹",
+  "theme": "森林",
+  "accent": "#68a84d",
+  "difficulty": 3,
+  "music": "tracks/forest/music.ogg",
+  "card": "tracks/forest/card.png",
+  "thumb": "tracks/forest/thumb.png",
+  "minimap": "tracks/forest/minimap.png",
+  "scene": "tracks/forest/track.gltf",
+  "sky": "tracks/forest/sky.gltf",
+  "route": "tracks/forest/route.json",
+  "start": [
+    653.7387,
+    61.9724,
+    -979.4147
+  ],
+  "startYaw": -0.75359,
+  "skyColor": "#86c4dd",
+  "fogColor": "#7c9c62",
+  "halfWidth": 10.0,
+  "length": 4669.43
+}

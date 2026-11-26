@@ -1,0 +1,98 @@
+[
+  {
+    "id": "village",
+    "name": "城镇高速公路",
+    "theme": "城镇",
+    "accent": "#54a7e8",
+    "difficulty": 2,
+    "music": "tracks/village/music.ogg",
+    "card": "tracks/village/card.png",
+    "thumb": "tracks/village/thumb.png",
+    "minimap": "tracks/village/minimap.png",
+    "scene": "tracks/village/track.gltf",
+    "sky": "tracks/village/sky.gltf",
+    "route": "tracks/village/route.json",
+    "start": [
+      143.6393,
+      26.8498,
+      -524.9852
+    ],
+    "startYaw": 3.14013,
+    "skyColor": "#8fc4e8",
+    "fogColor": "#b9d9b6",
+    "halfWidth": 24.0,
+    "length": 4631.26
+  },
+  {
+    "id": "forest",
+    "name": "森林发夹",
+    "theme": "森林",
+    "accent": "#68a84d",
+    "difficulty": 3,
+    "music": "tracks/forest/music.ogg",
+    "card": "tracks/forest/card.png",
+    "thumb": "tracks/forest/thumb.png",
+    "minimap": "tracks/forest/minimap.png",
+    "scene": "tracks/forest/track.gltf",
+    "sky": "tracks/forest/sky.gltf",
+    "route": "tracks/forest/route.json",
+    "start": [
+      653.7387,
+      61.9724,
+      -979.4147
+    ],
+    "startYaw": -0.75359,
+    "skyColor": "#86c4dd",
+    "fogColor": "#7c9c62",
+    "halfWidth": 18.5,
+    "length": 4669.43
+  },
+  {
+    "id": "desert",
+    "name": "沙漠旋转工地",
+    "theme": "沙漠",
+    "accent": "#d69242",
+    "difficulty": 2,
+    "music": "tracks/desert/music.ogg",
+    "card": "tracks/desert/card.png",
+    "thumb": "tracks/desert/thumb.png",
+    "minimap": "tracks/desert/minimap.png",
+    "scene": "tracks/desert/track.gltf",
+    "sky": "tracks/desert/sky.gltf",
+    "route": "tracks/desert/route.json",
+    "start": [
+      734.3512,
+      33.2022,
+      -156.6008
+    ],
+    "startYaw": -1.57104,
+    "skyColor": "#f0bd7d",
+    "fogColor": "#d9b37e",
+    "halfWidth": 17.5,
+    "length": 4142.13
+  },
+  {
+    "id": "ice",
+    "name": "冰山滑雪场",
+    "theme": "冰山",
+    "accent": "#58b7dc",
+    "difficulty": 3,
+    "music": "tracks/ice/music.ogg",
+    "card": "tracks/ice/card.png",
+    "thumb": "tracks/ice/thumb.png",
+    "minimap": "tracks/ice/minimap.png",
+    "scene": "tracks/ice/track.gltf",
+    "sky": "tracks/ice/sky.gltf",
+    "route": "tracks/ice/route.json",
+    "start": [
+      1099.9724,
+      530.375,
+      -1561.1684
+    ],
+    "startYaw": -1.57107,
+    "skyColor": "#9fd6f2",
+    "fogColor": "#d8edf4",
+    "halfWidth": 13.5,
+    "length": 4138.09
+  }
+]

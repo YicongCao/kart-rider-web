@@ -1,0 +1,24 @@
+{
+  "id": "village",
+  "name": "城镇高速公路",
+  "theme": "城镇",
+  "accent": "#54a7e8",
+  "difficulty": 2,
+  "music": "tracks/village/music.ogg",
+  "card": "tracks/village/card.png",
+  "thumb": "tracks/village/thumb.png",
+  "minimap": "tracks/village/minimap.png",
+  "scene": "tracks/village/track.gltf",
+  "sky": "tracks/village/sky.gltf",
+  "route": "tracks/village/route.json",
+  "start": [
+    143.6393,
+    26.8498,
+    -524.9852
+  ],
+  "startYaw": 3.14013,
+  "skyColor": "#8fc4e8",
+  "fogColor": "#b9d9b6",
+  "halfWidth": 10.0,
+  "length": 4631.26
+}

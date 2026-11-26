@@ -1,0 +1,24 @@
+{
+  "id": "ice",
+  "name": "冰山滑雪场",
+  "theme": "冰山",
+  "accent": "#58b7dc",
+  "difficulty": 3,
+  "music": "tracks/ice/music.ogg",
+  "card": "tracks/ice/card.png",
+  "thumb": "tracks/ice/thumb.png",
+  "minimap": "tracks/ice/minimap.png",
+  "scene": "tracks/ice/track.gltf",
+  "sky": "tracks/ice/sky.gltf",
+  "route": "tracks/ice/route.json",
+  "start": [
+    1099.9724,
+    530.375,
+    -1561.1684
+  ],
+  "startYaw": -1.57107,
+  "skyColor": "#9fd6f2",
+  "fogColor": "#d8edf4",
+  "halfWidth": 13.5,
+  "length": 4138.09
+}

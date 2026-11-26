@@ -1,0 +1,23 @@
+{
+  "name": "kart-rider-web",
+  "version": "1.0.0",
+  "description": "KartRider 1.0 browser remake built from original game assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "playwright test"
+  },
+  "keywords": [],
+  "dependencies": {
+    "three": "^0.181.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.181.0",
+    "playwright": "^1.56.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  }
+}
