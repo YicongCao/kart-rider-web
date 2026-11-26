@@ -171,8 +171,8 @@ export class RaceWorld {
       throw new Error("赛道数据读取失败");
     }
     const routeData = (await routeResponse.json()) as RouteData;
-    this.route = new Route(routeData);
-    this.minimap = this.buildMinimapProjection(routeData);
+    this.route = new Route(routeData, track.start);
+    this.minimap = this.buildMinimapProjection(this.route.data);
 
     reported = Math.max(reported, 0.94);
     onProgress(reported, "准备起跑");

@@ -21,7 +21,7 @@ export interface RaceResult {
   previousBest: number | null;
 }
 
-const pauseIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>`;
+const pauseIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>`;
 const speakerIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.8 6a8.5 8.5 0 0 1 0 12"/></svg>`;
 const mutedIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="m16 9 5 5m0-5-5 5"/></svg>`;
 const fullscreenIcon = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>`;
@@ -126,10 +126,8 @@ export class Hud {
         </div>
       </section>
 
-      <div class="countdown-layer is-hidden" data-countdown-layer>
-        <span class="countdown-flare"></span>
+      <div class="countdown-layer is-hidden" data-countdown-layer role="status" aria-live="assertive" aria-atomic="true">
         <strong data-countdown></strong>
-        <small data-countdown-note></small>
       </div>
 
       <div class="loading-screen is-hidden" data-loading>
@@ -292,12 +290,13 @@ export class Hud {
     }, duration);
   }
 
-  showCountdown(text: string, note = "") {
+  showCountdown(text: string) {
     const layer = this.query("[data-countdown-layer]");
     if (!layer) {
       return;
     }
     layer.classList.remove("is-hidden");
+    layer.classList.toggle("is-go", text === "GO!");
     const strong = layer.querySelector<HTMLElement>("[data-countdown]");
     if (strong) {
       strong.textContent = text;
@@ -305,7 +304,6 @@ export class Hud {
       void strong.offsetWidth;
       strong.classList.add("pop");
     }
-    this.setText("[data-countdown-note]", note);
   }
 
   hideCountdown() {

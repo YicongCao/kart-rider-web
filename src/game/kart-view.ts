@@ -11,7 +11,6 @@ import {
   MeshBasicMaterial,
   Object3D,
   PlaneGeometry,
-  Quaternion,
   Scene,
   Sprite,
   SpriteMaterial,
@@ -27,6 +26,7 @@ import type { RouteSample } from "../types";
 const KART_URL = "/assets/karts/cotton1/kart.gltf";
 const CHARACTER_URL = "/assets/characters/dao/dao.gltf";
 const MAX_TRAIL_VERTICES = 4200;
+const REAR_TIRE_EDGES = [-0.76, -0.48, 0.48, 0.76];
 
 function makeMaterialShaderFlat(root: Group) {
   root.traverse((object) => {
@@ -70,15 +70,18 @@ export class KartView {
   private previousYaw = 0;
   private roll = 0;
   private bounce = 0;
-  private lastTrailLeft: Vector3 | null = null;
-  private lastTrailRight: Vector3 | null = null;
+  private previousTread = REAR_TIRE_EDGES.map(() => new Vector3());
+  private currentTread = REAR_TIRE_EDGES.map(() => new Vector3());
   private trailGeometry = new BufferGeometry();
   private trailMesh: Mesh;
   private trailPositions = new Float32Array(MAX_TRAIL_VERTICES * 3);
   private trailVertexCount = 0;
-  private trailDirty = false;
+  private trailCursor = 0;
   private trailStarted = false;
-  private up = new Vector3(0, 1, 0);
+  private roadNormal = new Vector3();
+  private bodyForward = new Vector3();
+  private bodyXAxis = new Vector3();
+  private bodyBasis = new Matrix4();
 
   constructor(scene: Scene) {
     this.scene = scene;
@@ -159,18 +162,12 @@ export class KartView {
     }
     this.root.position.set(state.x, state.y + 0.015, state.z);
 
-    const forward = new Vector3(sample.forward[0], sample.forward[1], sample.forward[2]).normalize();
-    const up = new Vector3(sample.up[0], sample.up[1], sample.up[2]).normalize();
-    const right = new Vector3().crossVectors(forward, up).normalize();
-    this.up.copy(up);
-
-    const routeYaw = Math.atan2(sample.forward[0], sample.forward[2]);
-    const yawOffset = normalizeAngle(state.yaw - routeYaw);
-    const base = new Quaternion().setFromRotationMatrix(
-      new Matrix4().makeBasis(right, up, forward),
-    );
-    const localYaw = new Quaternion().setFromAxisAngle(up, yawOffset);
-    this.root.quaternion.copy(base.clone().multiply(localYaw));
+    this.roadNormal.fromArray(sample.up).normalize();
+    this.bodyXAxis.set(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+    this.bodyForward.crossVectors(this.bodyXAxis, this.roadNormal).normalize();
+    this.bodyXAxis.crossVectors(this.roadNormal, this.bodyForward).normalize();
+    this.bodyBasis.makeBasis(this.bodyXAxis, this.roadNormal, this.bodyForward);
+    this.root.quaternion.setFromRotationMatrix(this.bodyBasis);
 
     const yawDelta = normalizeAngle(state.yaw - this.previousYaw);
     this.previousYaw = state.yaw;
@@ -185,7 +182,7 @@ export class KartView {
 
     this.mixer?.update(dt);
     this.wheelSpin = (this.wheelSpin + Math.abs(state.speed) * dt * 3.2) % (Math.PI * 2);
-    const steerRotation = new Matrix4().makeRotationZ(steer * 0.62);
+    const steerRotation = new Matrix4().makeRotationZ(-steer * 0.62);
     const spinRotation = new Matrix4().makeRotationX(this.wheelSpin);
     if (this.handle) {
       this.applyPartRotation(this.handle, steerRotation);
@@ -218,16 +215,14 @@ export class KartView {
       }
     }
 
-    this.updateTrail(state, dt);
+    this.updateTrail(state);
   }
 
   resetTrail() {
     this.trailStarted = false;
-    this.lastTrailLeft = null;
-    this.lastTrailRight = null;
     this.trailVertexCount = 0;
+    this.trailCursor = 0;
     this.trailGeometry.setDrawRange(0, 0);
-    this.trailDirty = true;
   }
 
   setVisible(visible: boolean) {
@@ -405,62 +400,34 @@ export class KartView {
     return mesh;
   }
 
-  private updateTrail(state: VehicleState, dt: number) {
-    if (!this.loaded) return;
+  private updateTrail(state: VehicleState) {
     if (!state.drifting || Math.abs(state.speed) < 4) {
       this.trailStarted = false;
-      this.lastTrailLeft = null;
-      this.lastTrailRight = null;
       return;
     }
 
-    const worldMatrix = new Matrix4().compose(
-      this.root.position,
-      this.root.quaternion,
-      new Vector3(1, 1, 1),
-    );
-    const leftNow = new Vector3(-0.58, 0.035, -0.58).applyMatrix4(worldMatrix);
-    const rightNow = new Vector3(0.58, 0.035, -0.58).applyMatrix4(worldMatrix);
-
-    if (!this.trailStarted) {
-      this.trailStarted = true;
-      this.lastTrailLeft = leftNow;
-      this.lastTrailRight = rightNow;
-      return;
+    for (const [index, edge] of REAR_TIRE_EDGES.entries()) {
+      this.currentTread[index].set(edge, 0.03, -0.50)
+        .applyQuaternion(this.root.quaternion).add(this.root.position);
     }
-    if (!this.lastTrailLeft || !this.lastTrailRight) {
-      return;
-    }
-    const distance = leftNow.distanceTo(this.lastTrailLeft);
-    if (distance < 0.12) {
-      return;
-    }
-
-    this.pushTrailQuad(this.lastTrailLeft, this.lastTrailRight, leftNow, rightNow);
-    this.lastTrailLeft = leftNow;
-    this.lastTrailRight = rightNow;
-    if (this.trailDirty) {
+    if (this.trailStarted) {
+      if (this.previousTread[0].distanceToSquared(this.currentTread[0]) < 0.12 ** 2) return;
+      for (const edge of [0, 2]) {
+        const previousInner = this.previousTread[edge];
+        const previousOuter = this.previousTread[edge + 1];
+        const inner = this.currentTread[edge];
+        const outer = this.currentTread[edge + 1];
+        for (const vertex of [previousInner, inner, previousOuter, previousOuter, inner, outer]) {
+          vertex.toArray(this.trailPositions, this.trailCursor * 3);
+          this.trailCursor = (this.trailCursor + 1) % MAX_TRAIL_VERTICES;
+        }
+      }
+      this.trailVertexCount = Math.min(MAX_TRAIL_VERTICES, this.trailVertexCount + 12);
       this.trailGeometry.getAttribute("position").needsUpdate = true;
       this.trailGeometry.setDrawRange(0, this.trailVertexCount);
-      this.trailGeometry.computeBoundingSphere();
-      this.trailDirty = false;
     }
-    void dt;
-  }
-
-  private pushTrailQuad(a: Vector3, b: Vector3, c: Vector3, d: Vector3) {
-    if (this.trailVertexCount + 18 > this.trailPositions.length) {
-      this.trailVertexCount = 0;
-    }
-    const vertices = [a, b, c, b, d, c];
-    for (const vertex of vertices) {
-      const offset = this.trailVertexCount;
-      this.trailPositions[offset] = vertex.x;
-      this.trailPositions[offset + 1] = vertex.y + 0.015;
-      this.trailPositions[offset + 2] = vertex.z;
-      this.trailVertexCount += 3;
-    }
-    this.trailDirty = true;
+    [this.previousTread, this.currentTread] = [this.currentTread, this.previousTread];
+    this.trailStarted = true;
   }
 }
 

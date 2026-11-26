@@ -16,6 +16,8 @@ import { formatTime } from "../util/format";
 
 const TOTAL_LAPS = 2;
 const RECORD_KEY = "kart-rider-remake.records.v1";
+const GRID_INTRO_SECONDS = 3;
+const COUNTDOWN_SECONDS = 3;
 
 interface StoredRecords {
   [trackId: string]: TrackRecord;
@@ -84,7 +86,9 @@ export class Game {
   private collisionCooldown = 0;
   private previousSpeed = 0;
   private kartLoaded = false;
-  private cameraInitialized = false;
+  private gridElapsed = 0;
+  private countdownBeat = 0;
+  private cameraYaw = 0;
   private cameraTarget = new Vector3();
   private finishAt = 0;
   private debug = false;
@@ -121,9 +125,6 @@ export class Game {
       if (document.hidden && this.phase === "racing") {
         this.pause();
       }
-    });
-    window.addEventListener("resize", () => {
-      this.cameraInitialized = false;
     });
     this.animationFrame = requestAnimationFrame(this.frame);
   }
@@ -189,7 +190,7 @@ export class Game {
       this.audio.update(rawDelta, 0, false, false, false);
     } else if (this.phase === "countdown" && this.vehicle) {
       this.audio.update(rawDelta, 0, false, false, false);
-      this.updateCamera(rawDelta, this.vehicle.state, true);
+      if (!document.hidden) this.updateGrid(rawDelta);
     }
 
     if (this.phase === "racing" && this.vehicle) {
@@ -220,6 +221,7 @@ export class Game {
     (document.activeElement as HTMLElement | null)?.blur();
     this.menu.hide();
     this.hud.hide();
+    void this.audio.unlock();
     this.audio.stopRace();
     this.audio.playRace(track.music);
     this.audio.sfx("click");
@@ -281,9 +283,7 @@ export class Game {
     this.hud.show(track, this.minimapProjection);
     this.hud.setMuted(this.audio.isMuted());
     this.kartView.setVisible(true);
-    this.phase = "countdown";
     this.resetRaceState(track);
-    this.startCountdown(generation);
   }
 
   private beginSession(track: TrackInfo) {
@@ -358,41 +358,41 @@ export class Game {
     this.hud.setWrongWay(false);
     this.kartView.resetTrail();
     this.kartView.setVisible(true);
-    this.cameraInitialized = false;
     const sample = route.query(start.p[0], start.p[2]);
     this.previousProgress = 0;
     this.routeHint = 0;
     this.progressInitialized = true;
     this.lapArmed = false;
     this.kartView.update(this.vehicle.state, 0.016, sample);
-    this.updateCamera(0.016, this.vehicle.state, true, true);
+    this.updateMinimap(this.vehicle.state);
+    this.gridElapsed = 0;
+    this.countdownBeat = 0;
+    this.cameraYaw = yaw;
+    this.phase = "countdown";
+    this.hud.hideCountdown();
+    this.updateGridCamera(this.vehicle.state, 0);
   }
 
-  private async startCountdown(generation: number) {
-    this.hud.hidePause();
-    this.hud.hideResult();
-    this.phase = "countdown";
-    this.hud.showCountdown("3");
-    this.audio.sfx("countdown");
-    await sleep(900);
-    if (generation !== this.raceGeneration) return;
-    this.hud.showCountdown("2");
-    this.audio.sfx("countdown");
-    await sleep(900);
-    if (generation !== this.raceGeneration) return;
-    this.hud.showCountdown("1");
-    this.audio.sfx("countdown");
-    await sleep(900);
-    if (generation !== this.raceGeneration) return;
+  private updateGrid(delta: number) {
+    if (!this.vehicle) return;
+    this.gridElapsed += delta;
+    const remaining = GRID_INTRO_SECONDS + COUNTDOWN_SECONDS - this.gridElapsed;
+    this.updateGridCamera(this.vehicle.state, Math.min(1, this.gridElapsed / GRID_INTRO_SECONDS));
+    if (remaining > COUNTDOWN_SECONDS) return;
+    if (remaining > 0) {
+      const beat = Math.ceil(remaining);
+      if (beat !== this.countdownBeat) {
+        this.countdownBeat = beat;
+        this.hud.showCountdown(String(beat));
+        this.audio.sfx("countdown");
+      }
+      return;
+    }
     this.phase = "racing";
-    this.lastFrame = performance.now();
-    this.vehicle?.setStartAt(0);
-    this.vehicle?.primeThrottleHeld(this.input.snapshot().throttle);
+    this.vehicle.setStartAt(0);
+    this.vehicle.primeThrottleHeld(this.input.snapshot().throttle);
     this.hud.showCountdown("GO!");
     this.audio.sfx("start");
-    window.setTimeout(() => {
-      if (generation === this.raceGeneration) this.hud.hideCountdown();
-    }, 760);
   }
 
   private updateRace(state: VehicleState, delta: number) {
@@ -407,7 +407,11 @@ export class Game {
     this.routeHint = sample.index;
     this.routeForward = sample.forward;
     this.kartView.update(state, delta, sample, this.input.snapshot().steer);
-    this.updateCamera(delta, state, false);
+    this.updateChaseCamera(delta, state);
+    if (this.countdownBeat && state.time >= 0.76) {
+      this.hud.hideCountdown();
+      this.countdownBeat = 0;
+    }
 
     const timeMs = state.time * 1000;
     this.hud.setTime(timeMs);
@@ -417,16 +421,7 @@ export class Game {
     this.hud.setDrift(state.drifting, state.gauge);
     this.hud.setBoost(state.boosting);
 
-    if (this.minimapProjection) {
-      const projection = this.minimapProjection;
-      const mapX =
-        ((state.x - projection.centerX) * projection.scale + projection.width / 2) /
-        projection.width;
-      const mapY =
-        ((-state.z - projection.centerY) * projection.scale + projection.height / 2) /
-        projection.height;
-      this.hud.setMinimap(mapX, mapY, normalizeAngle(state.yaw));
-    }
+    this.updateMinimap(state);
 
     const forwardDot =
       Math.sin(state.yaw) * this.routeForward[0] + Math.cos(state.yaw) * this.routeForward[2];
@@ -490,50 +485,69 @@ export class Game {
     }
   }
 
-  private updateCamera(
-    delta: number,
-    state: VehicleState,
-    countdown: boolean,
-    instant = false,
-  ) {
-    const route = this.world.route;
-    if (!route) {
+  private updateMinimap(state: VehicleState) {
+    const projection = this.minimapProjection;
+    if (!projection) return;
+    const mapX = 0.5 + (state.x - projection.centerX) * projection.scale / projection.width;
+    const mapY = 0.5 + (-state.z - projection.centerY) * projection.scale / projection.height;
+    this.hud.setMinimap(mapX, mapY, normalizeAngle(state.yaw));
+  }
+
+  private updateGridCamera(state: VehicleState, progress: number) {
+    const cut = 1 / 3;
+    if (progress < cut) {
+      const approach = progress / cut;
+      this.placeCamera(state, state.yaw - 0.15, 21 - 5 * approach, 8 - 2 * approach,
+        state.yaw, 5, 58);
       return;
     }
-    const sample = route.query(state.x, state.z);
-    const forward = new Vector3(sample.forward[0], 0, sample.forward[2]).normalize();
+    const sweep = MathUtils.smootherstep(progress, cut, 1);
+    const yaw = state.yaw + (1 - sweep) * 2.35;
+    const distance = MathUtils.lerp(7.1, 7.6, sweep);
+    const height = 3.1 + 1.4 * (1 - sweep) + 1.5 * Math.sin(Math.PI * sweep);
+    const lookAhead = MathUtils.lerp(0, 5.4, sweep);
+    this.placeCamera(state, yaw, distance, height, state.yaw, lookAhead, 51 + 9 * sweep);
+  }
+
+  private updateChaseCamera(delta: number, state: VehicleState) {
     const speed = Math.abs(state.speed);
-    const distance = countdown ? 9.2 : 7.6 + Math.min(1.8, speed * 0.028);
-    const height = countdown ? 4.05 : 3.1 + Math.min(0.5, speed * 0.005);
-    const desired = new Vector3(
-      state.x - forward.x * distance,
-      state.y + height,
-      state.z - forward.z * distance,
+    const slip = Math.atan2(state.lateralSpeed, Math.max(state.speed, 1));
+    const travelYaw = state.yaw + MathUtils.clamp(slip, -0.9, 0.9) * MathUtils.smoothstep(state.speed, 1, 6);
+    const yawError = normalizeAngle(travelYaw - this.cameraYaw);
+    this.cameraYaw = normalizeAngle(this.cameraYaw + yawError * (1 - Math.exp(-5.5 * delta)));
+    const distance = 7.6 + Math.min(1.8, speed * 0.028);
+    const height = 3.1 + Math.min(0.5, speed * 0.005);
+    const targetFov = 60 + Math.min(10, speed * 0.17) + (state.boosting ? 4 : 0);
+    const fov = MathUtils.damp(this.world.camera.fov, targetFov, 3, delta);
+    this.placeCamera(state, this.cameraYaw, distance, height, this.cameraYaw, 5.4, fov);
+  }
+
+  private placeCamera(
+    state: VehicleState, orbitYaw: number, distance: number, height: number,
+    lookYaw: number, lookAhead: number, fov: number,
+  ) {
+    const [forwardX, forwardY, forwardZ] = this.routeForward;
+    const grade = forwardY / Math.max(0.25, forwardX * forwardX + forwardZ * forwardZ);
+    const offsetX = -Math.sin(orbitYaw) * distance;
+    const offsetZ = -Math.cos(orbitYaw) * distance;
+    const aheadX = Math.sin(lookYaw) * lookAhead;
+    const aheadZ = Math.cos(lookYaw) * lookAhead;
+    const camera = this.world.camera;
+    camera.position.set(
+      state.x + offsetX,
+      state.y + height + grade * (offsetX * forwardX + offsetZ * forwardZ),
+      state.z + offsetZ,
     );
-    const look = new Vector3(
-      state.x + forward.x * (countdown ? 3 : 5.4),
-      state.y + 1.05,
-      state.z + forward.z * (countdown ? 3 : 5.4),
+    this.cameraTarget.set(
+      state.x + aheadX,
+      state.y + 1.05 + grade * (aheadX * forwardX + aheadZ * forwardZ),
+      state.z + aheadZ,
     );
-    if (state.boosting) {
-      desired.x += (Math.random() - 0.5) * 0.045;
-      desired.y += (Math.random() - 0.5) * 0.035;
+    camera.lookAt(this.cameraTarget);
+    if (Math.abs(camera.fov - fov) > 0.001) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
     }
-    if (instant || !this.cameraInitialized) {
-      this.world.camera.position.copy(desired);
-      this.cameraTarget.copy(look);
-      this.cameraInitialized = true;
-    } else {
-      const follow = 1 - Math.exp(-Math.max(0.001, delta) * (countdown ? 3.2 : 6.5));
-      const targetFollow = 1 - Math.exp(-Math.max(0.001, delta) * 8);
-      this.world.camera.position.lerp(desired, follow);
-      this.cameraTarget.lerp(look, targetFollow);
-    }
-    this.world.camera.up.set(0, 1, 0);
-    this.world.camera.lookAt(this.cameraTarget);
-    const targetFov = (countdown ? 58 : 60) + Math.min(10, speed * 0.17) + (state.boosting ? 4 : 0);
-    this.world.camera.fov += (targetFov - this.world.camera.fov) * Math.min(1, delta * 3);
-    this.world.camera.updateProjectionMatrix();
   }
 
   private finishRace(timeMs: number) {
@@ -593,13 +607,11 @@ export class Game {
     (document.activeElement as HTMLElement | null)?.blur();
   }
 
-  private async restart() {
+  private restart() {
     if (!this.selectedTrackId) {
       return;
     }
     this.raceGeneration += 1;
-    const generation = this.raceGeneration;
-    this.phase = "countdown";
     this.hud.hidePause();
     this.hud.hideResult();
     this.input.releaseAll();
@@ -610,13 +622,11 @@ export class Game {
     this.hud.show(track, this.minimapProjection);
     this.kartView.resetTrail();
     this.kartView.setVisible(true);
-    this.hud.hideCountdown();
     this.hud.setSpeed(0);
     this.hud.setBoost(false);
     this.hud.setGauge(0, false);
     this.resetRaceState(track);
     this.audio.playRace(track.music);
-    this.startCountdown(generation);
   }
 
   private quitToMenu() {
@@ -647,6 +657,7 @@ export class Game {
     const sample = route.query(state.x, state.z);
     const yaw = Math.atan2(sample.forward[0], sample.forward[2]);
     this.vehicle.resetPose(sample.x, sample.y, sample.z, yaw);
+    this.cameraYaw = yaw;
     this.previousProgress = sample.s;
     this.routeHint = sample.index;
     this.lapArmed =

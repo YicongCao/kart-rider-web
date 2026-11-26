@@ -12,11 +12,11 @@
   "sky": "tracks/desert/sky.gltf",
   "route": "tracks/desert/route.json",
   "start": [
-    734.3512,
-    33.2022,
-    -156.6008
+    264.6212,
+    37.9814,
+    -484.4524
   ],
-  "startYaw": -1.57104,
+  "startYaw": 3.11992,
   "skyColor": "#f0bd7d",
   "fogColor": "#d9b37e",
   "halfWidth": 17.5,

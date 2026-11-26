@@ -119,14 +119,14 @@ export const DEFAULT_TUNING: VehicleTuning = {
   tireStiffness: 980,
   tireGrip: 5,
   tireSlipLimitRad: 0.1,
-  halfWheelbase: 0.65,
+  halfWheelbase: 0.5,
   yawInertiaDiv: 12,
   yawRateLimit: 2.5,
   driftYawRateLimit: 1.35,
   yawDamping: 1.2,
   straightYawDamping: 10,
   normalLateralDamping: 3,
-  driftLateralDamping: 0.9,
+  driftLateralDamping: 1.8,
   decayLateralDamping: 3.5,
   cornerDrawFactor: 0.18,
   driftTrigTime: 0.2,
@@ -134,7 +134,7 @@ export const DEFAULT_TUNING: VehicleTuning = {
   driftSlipFactor: 0.2,
   driftTriggerFrontGrip: 0.45,
   driftEntryYaw: 0.25,
-  driftStopSpeed: 0.5,
+  driftStopSpeed: 5,
   driftMaxGauge: 4300,
   driftGaugeScale: 3.7,
   boostDuration: 3,
@@ -383,7 +383,7 @@ export class KartVehicle {
   private startBoostConsumed: boolean;
   private startAtSecondsValue: number | null;
   private previousThrottleDown: boolean;
-  private previousDriftDown: boolean;
+  private previousDriftChord: boolean;
   private previousBoostDown: boolean;
   private accumulatorSeconds: number;
   private elapsedSeconds: number;
@@ -431,7 +431,7 @@ export class KartVehicle {
         ? options.startAtSeconds
         : null;
     this.previousThrottleDown = false;
-    this.previousDriftDown = false;
+    this.previousDriftChord = false;
     this.previousBoostDown = false;
     this.accumulatorSeconds = 0;
     this.elapsedSeconds = 0;
@@ -565,7 +565,8 @@ export class KartVehicle {
     const boostHeld = input.boost === true;
     const throttleDown = throttle > 0.01;
     const throttleEdge = throttleDown && !this.previousThrottleDown;
-    const driftEdge = driftHeld && !this.previousDriftDown;
+    const driftChord = driftHeld && Math.abs(steerTarget) > 0.05;
+    const driftEdge = driftChord && !this.previousDriftChord;
     const boostEdge = boostHeld && !this.previousBoostDown;
 
     const surface =
@@ -671,9 +672,10 @@ export class KartVehicle {
 
     const speedMagnitude = Math.abs(this.forwardSpeed);
     const travelSign = this.forwardSpeed < 0 ? -1 : 1;
+    const maxSteeringAngle = this.configuration.maxSteerDeg * Math.PI / 180;
     const steeringAngle =
       this.steerSmoothed *
-      ((this.configuration.maxSteerDeg * Math.PI) / 180) *
+      maxSteeringAngle *
       Math.exp(
         (-speedMagnitude / this.configuration.steerConstraint) *
           this.configuration.steeringExponentialScale,
@@ -681,32 +683,33 @@ export class KartVehicle {
       travelSign;
 
     const speedReference = Math.max(speedMagnitude, 2);
-    const lateralRatio = this.lateralVelocity / speedReference;
-    const angularRatio =
-      (this.yawRate * this.configuration.halfWheelbase) / speedReference;
-
-    let frontSlip = steeringAngle - lateralRatio - angularRatio;
-    let rearSlip = -lateralRatio + angularRatio;
-    const slipLimit = this.configuration.tireSlipLimitRad;
-    frontSlip = clamp(frontSlip, -slipLimit, slipLimit);
-    rearSlip = clamp(rearSlip, -slipLimit, slipLimit);
+    const axleSpeed = this.yawRate * this.configuration.halfWheelbase;
+    let frontSlip = steeringAngle -
+      Math.atan2(this.lateralVelocity + axleSpeed, speedReference);
+    let rearSlip = -Math.atan2(this.lateralVelocity - axleSpeed, speedReference);
 
     let frontGrip = 1;
     let rearGrip = 1;
     if (this.driftPhaseValue === "trigger") {
+      frontSlip = this.driftDirection * maxSteeringAngle;
       frontGrip = this.configuration.driftTriggerFrontGrip;
-      rearGrip = this.configuration.driftSlipFactor;
+      rearGrip = 0;
     } else if (this.driftPhaseValue === "active") {
-      rearGrip = this.configuration.driftSlipFactor;
+      frontGrip = this.configuration.driftSlipFactor;
+      rearGrip = frontGrip;
     } else if (this.driftPhaseValue === "decay") {
       const recovery = clamp(
         1 - this.driftTimer / this.configuration.driftDecayTime,
         0,
         1,
       );
-      rearGrip =
-        this.configuration.driftSlipFactor +
+      frontGrip = this.configuration.driftSlipFactor +
         (1 - this.configuration.driftSlipFactor) * recovery;
+      rearGrip = frontGrip;
+    } else {
+      const slipLimit = this.configuration.tireSlipLimitRad;
+      frontSlip = clamp(frontSlip, -slipLimit, slipLimit);
+      rearSlip = clamp(rearSlip, -slipLimit, slipLimit);
     }
     frontGrip *= gripMultiplier;
     rearGrip *= gripMultiplier;
@@ -755,7 +758,7 @@ export class KartVehicle {
         : this.driftPhaseValue === "decay"
           ? this.configuration.decayLateralDamping
           : this.configuration.driftLateralDamping;
-    this.lateralVelocity *= Math.exp(-lateralDamping * partialStep);
+    this.lateralVelocity *= Math.exp(-lateralDamping * gripMultiplier * partialStep);
 
     if (this.forwardSpeed !== 0) {
       this.forwardSpeed -=
@@ -814,7 +817,7 @@ export class KartVehicle {
 
     this.elapsedSeconds += partialStep;
     this.previousThrottleDown = throttleDown;
-    this.previousDriftDown = driftHeld;
+    this.previousDriftChord = driftChord;
     this.previousBoostDown = boostHeld;
   }
 
@@ -827,8 +830,7 @@ export class KartVehicle {
     if (
       driftEdge &&
       this.driftPhaseValue === "none" &&
-      Math.abs(steerTarget) > 0.05 &&
-      Math.abs(this.forwardSpeed) >= this.configuration.driftStopSpeed
+      this.forwardSpeed >= this.configuration.driftStopSpeed
     ) {
       this.driftPhaseValue = "trigger";
       this.driftDirection = steerTarget > 0 ? 1 : -1;
@@ -852,7 +854,7 @@ export class KartVehicle {
     }
 
     if (this.driftPhaseValue === "active") {
-      if (!driftHeld) {
+      if (!driftHeld || steerTarget * this.driftDirection < -0.05) {
         this.driftPhaseValue = "decay";
         this.driftTimer = this.configuration.driftDecayTime;
       } else if (

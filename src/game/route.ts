@@ -30,26 +30,31 @@ export class Route {
   readonly length: number;
   readonly halfWidth: number;
 
-  private readonly cumulative: number[] = [0];
-
-  constructor(data: RouteData) {
-    this.data = data;
-    this.points = data.points;
+  constructor(data: RouteData, grid?: Vec3) {
     this.length = data.length;
     this.halfWidth = data.halfWidth;
-
-    for (let index = 1; index < this.points.length; index += 1) {
-      const previous = this.points[index - 1].p;
-      const current = this.points[index].p;
-      this.cumulative.push(
-        this.cumulative[index - 1] +
-          Math.hypot(
-            current[0] - previous[0],
-            current[1] - previous[1],
-            current[2] - previous[2],
-          ),
-      );
+    let startIndex = 0;
+    if (grid) {
+      let closest = Infinity;
+      for (const [index, point] of data.points.entries()) {
+        const [x, y, z] = point.p;
+        const distance = (x - grid[0]) ** 2 + (y - grid[1]) ** 2 + (z - grid[2]) ** 2;
+        if (distance < closest) {
+          closest = distance;
+          startIndex = index;
+        }
+      }
     }
+    this.points = data.points;
+    if (startIndex > 0) {
+      const startS = data.points[startIndex].s;
+      const ordered = data.points.slice(startIndex).concat(data.points.slice(0, startIndex));
+      this.points = ordered.map((point) => ({
+        ...point,
+        s: point.s >= startS ? point.s - startS : point.s + data.length - startS,
+      }));
+    }
+    this.data = { ...data, points: this.points };
   }
 
   pointAt(index: number) {
@@ -90,7 +95,7 @@ export class Route {
     let bestSegmentDistance = Number.POSITIVE_INFINITY;
     let bestT = 0;
 
-    for (const startIndex of [wrapIndex(bestIndex - 1, count), bestIndex]) {
+    for (const startIndex of [bestIndex, wrapIndex(bestIndex - 1, count)]) {
       const endIndex = wrapIndex(startIndex + 1, count);
       const start = this.points[startIndex].p;
       const end = this.points[endIndex].p;
@@ -129,17 +134,12 @@ export class Route {
     const centerZ = lerp(a.p[2], b.p[2], bestT);
     const lateral = (x - centerX) * right[0] + (z - centerZ) * right[2];
 
-    let segmentStart = a.s;
-    let segmentEnd = b.s;
-    if (segmentEnd <= segmentStart) {
-      segmentStart = this.cumulative[bestSegment];
-      segmentEnd = this.cumulative[bestSegment + 1] ?? this.length;
-    }
+    const segmentEnd = bestSegment === count - 1 ? this.length : b.s;
 
     return {
       index: bestSegment,
       segment: bestSegment,
-      s: lerp(segmentStart, segmentEnd, bestT),
+      s: lerp(a.s, segmentEnd, bestT) % this.length,
       x: centerX,
       y: centerY,
       z: centerZ,
