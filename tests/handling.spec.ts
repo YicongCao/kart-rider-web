@@ -9,8 +9,10 @@ import type { RouteData, Vec3 } from "../src/types";
 
 test("the first P3563 bend retains its speed profile and mirrors to the left", () => {
   // P3563 race-clock offsets from the 199 km/h entry frame, and HUD km/h.
+  // The 1.84 s sample is 152 km/h: the earlier 147 km/h reading came from a
+  // compressed frame. Adjacent source frames read 151 and 152 km/h.
   const speeds = new Map([[41, 196], [81, 179], [122, 160], [166, 151],
-    [184, 147], [203, 152], [250, 168], [288, 177]]);
+    [184, 152], [203, 152], [250, 168], [288, 177]]);
   const right = new KartVehicle({ speed: 199 / 3.6 });
   const left = new KartVehicle({ speed: 199 / 3.6 });
   for (let t = 0; t < 288; t++) {

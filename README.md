@@ -24,7 +24,10 @@ Before delivering changes, run the full acceptance gate:
 npm run verify
 ```
 
-This includes the grip-only full-lap test in `tests/grip-lap.spec.ts`.
+This includes the grip-only full-lap test in `tests/grip-lap.spec.ts`, the
+every-corner drift acceptance in `tests/drift-corners.spec.ts`, and the
+original-KSV drift comparison in `tests/drift-reference.spec.ts`. See
+`docs/handling.md` for the comparison basis and evidence limits.
 
 The game expects converted assets under `public/assets/`. They are not downloaded automatically.
 

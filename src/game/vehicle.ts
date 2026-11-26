@@ -120,6 +120,18 @@ export interface VehicleTuning {
   driftGripScale: number;
   /** Calibrated grip multiplier while the drift is regripping. */
   driftRecoveryGripFactor: number;
+  /** Front-axle grip multiplier for the sustained (Shift-held) drift phase. */
+  driftActiveFrontGripFactor: number;
+  /** Rear-axle grip multiplier for the sustained (Shift-held) drift phase. */
+  driftActiveRearGripFactor: number;
+  /** Base body yaw rate held by the sustained drift, in radians per second. */
+  driftActiveYawRate: number;
+  /** Additional body yaw rate from steering into the drift, in radians per second. */
+  driftActiveSteerYawRate: number;
+  /** Additional yaw authority when countersteering against the drift, in radians per second. */
+  driftActiveCounterYawRate: number;
+  /** Response time for the sustained drift yaw target, in seconds. */
+  driftActiveYawResponseTime: number;
   /** Calibrated longitudinal scrub per m/s of sideslip while drifting. */
   driftSlipDrag: number;
   /** Seconds after drift start during which slip scrub is applied. */
@@ -130,6 +142,22 @@ export interface VehicleTuning {
   driftSettleTime: number;
   /** Calibrated effective yaw-inertia multiplier while a drift is in progress. */
   driftYawInertiaFactor: number;
+  /** Effective yaw-inertia multiplier while the drift key stays held. */
+  driftActiveYawInertiaFactor: number;
+  /** Raw steering-angle scale used by the sustained drift phase. */
+  driftActiveSteerAngleScale: number;
+  /** Tire slip-angle saturation while the drift key stays held, in radians. */
+  driftSlipSaturation: number;
+  /** Sustained-drift body slip angle with neutral steering, in radians. */
+  driftActiveSlipAngle: number;
+  /** Extra body slip angle at full steering into the drift, in radians. */
+  driftActiveSlipSteerAngle: number;
+  /** Response time for the sustained-drift body slip envelope, in seconds. */
+  driftActiveSlipResponseTime: number;
+  /** Throttle-force multiplier used to preserve speed through a sustained drift. */
+  driftActiveThrustFactor: number;
+  /** Seconds after ignition before the sustained-drift calibration engages. */
+  driftSustainTime: number;
   /** Scale on the raw maximum steering angle used by the trigger force. */
   driftTriggerAngleScale: number;
   driftTriggerFactor: number;
@@ -187,13 +215,32 @@ export const DEFAULT_TUNING: VehicleTuning = {
   // calibrating the visible P3563 yaw and speed profile below.
   driftGripScale: 4,
   driftRecoveryGripFactor: 3.5,
-  driftSlipDrag: 0.5,
+  driftActiveFrontGripFactor: 1.25,
+  driftActiveRearGripFactor: 0.45,
+  driftActiveYawRate: 0.82,
+  driftActiveSteerYawRate: 0.62,
+  driftActiveCounterYawRate: 1.5,
+  driftActiveYawResponseTime: 0.14,
+  driftSlipDrag: 0.25,
   driftDragDuration: 1.2,
   driftSettleYawDamping: 6,
   driftSettleTime: 1.8,
   // The H5 yaw inertia is mass/12. Grip handling uses the response-limited
   // bicycle model below; the drift branch keeps a larger effective inertia.
   driftYawInertiaFactor: 10.44,
+  driftActiveYawInertiaFactor: 10.44,
+  driftActiveSteerAngleScale: 2,
+  driftSlipSaturation: 0.32,
+  // The KSV drift corpus has a 53.1 deg median side slip (41.4..60.0 deg
+  // interquartile range). The sustained envelope reaches that range after the
+  // trigger phase without making sharp-corner recovery unmanageable.
+  driftActiveSlipAngle: 1.14,
+  driftActiveSlipSteerAngle: 0.2,
+  driftActiveSlipResponseTime: 0.18,
+  driftActiveThrustFactor: 4,
+  // The sustained grip, yaw, slip envelope and thrust engage together so the
+  // short P3563 taps keep their recorded speed and mini-boost timing.
+  driftSustainTime: 0.45,
   // Trigger force is front-only and proportional to the raw 10 deg steering
   // angle. The 3.6 scale replaces the missing triggerRawSteer detail.
   driftTriggerAngleScale: 3.6,
@@ -731,7 +778,7 @@ export class KartVehicle {
     }
 
     if (!throttleDown && this.boostKind === "drift") this.endBoost();
-    if (grounded) this.updateDriftState(driftChord, driftEdge, steerTarget, partialStep);
+    if (grounded) this.updateDriftState(driftHeld, driftEdge, steerTarget, partialStep);
     if (Math.hypot(this.forwardSpeed, this.lateralVelocity) <
         this.configuration.driftStopSpeed) {
       this.miniBoostWindowUntil = -Infinity;
@@ -778,7 +825,8 @@ export class KartVehicle {
     const tireSpeed = Math.max(speed, 1);
     const lateralRatio = this.lateralVelocity / tireSpeed;
     const axleRatio = this.yawRate * spec.halfWheelbase / tireSpeed;
-    const steerAngle = steerTarget * spec.maxSteerDeg * Math.PI / 180 *
+    const rawSteerAngle = steerTarget * spec.maxSteerDeg * Math.PI / 180;
+    const steerAngle = rawSteerAngle *
       Math.exp(-forwardMagnitude / spec.steerConstraint * spec.steeringExponentialScale);
     const travelDirection = this.forwardSpeed < 0 ? -1 : 1;
     const tireForce = spec.tireStiffness * spec.tireGrip * gripMultiplier * Math.min(speed, 1);
@@ -787,6 +835,8 @@ export class KartVehicle {
     const trigger = this.driftPhaseValue === "trigger";
     const active = this.driftPhaseValue === "active";
     const sliding = speed > 15 && Math.abs(this.lateralVelocity) > 1.2 * forwardMagnitude;
+    const sustained = active &&
+      this.elapsedSeconds - this.driftStartSeconds >= spec.driftSustainTime;
 
     // The tires can have regained their grip while the kart is still moving sideways.
     const recovery = this.driftPhaseValue === "decay"
@@ -817,8 +867,10 @@ export class KartVehicle {
           (1 - Math.exp(-partialStep / spec.tireResponseTime));
         const driftGrip = spec.driftSlipFactor * spec.driftGripScale *
           this.tireEnvelope;
-        frontGrip = driftGrip;
-        rearGrip = driftGrip;
+        frontGrip = driftGrip *
+          (sustained ? spec.driftActiveFrontGripFactor : 1);
+        rearGrip = driftGrip *
+          (sustained ? spec.driftActiveRearGripFactor : 1);
       } else if (this.driftPhaseValue === "decay") {
         const releasedGrip = this.tireEnvelope * spec.driftSlipFactor *
           spec.driftGripScale;
@@ -827,15 +879,19 @@ export class KartVehicle {
         frontGrip *= spec.driftRecoveryGripFactor;
         rearGrip *= spec.driftRecoveryGripFactor;
       }
+      const driftSteerAngle = sustained
+        ? rawSteerAngle * spec.driftActiveSteerAngleScale
+        : steerAngle;
+      const slipLimit = sustained ? spec.driftSlipSaturation : spec.tireSlipSaturation;
       const frontSlip = clamp(
-        steerAngle * travelDirection - lateralRatio - axleRatio,
-        -spec.tireSlipSaturation,
-        spec.tireSlipSaturation,
+        driftSteerAngle * travelDirection - lateralRatio - axleRatio,
+        -slipLimit,
+        slipLimit,
       );
       const rearSlip = clamp(
         -lateralRatio + axleRatio,
-        -spec.tireSlipSaturation,
-        spec.tireSlipSaturation,
+        -slipLimit,
+        slipLimit,
       );
       frontForce = tireForce * frontGrip * frontSlip;
       rearForce = tireForce * rearGrip * rearSlip;
@@ -854,7 +910,11 @@ export class KartVehicle {
     // Its stock thrust matches the recording without the cruise calibration.
     const driveScale = this.boostKind === "drift" ? 1 : spec.driveScale;
     const driveContact = boostActive ? 1 : rearContact;
-    let forwardForce = driveForce * driveScale * throttle * boostMultiplier * accelerationMultiplier * driveContact;
+    const driftThrustScale = sustained && driftHeld
+      ? spec.driftActiveThrustFactor
+      : 1;
+    let forwardForce = driveForce * driftThrustScale * driveScale * throttle *
+      boostMultiplier * accelerationMultiplier * driveContact;
     if (grounded && brake > 0) {
       forwardForce -= (this.forwardSpeed > 0.5 ? spec.gripBrake : spec.backwardAccel) * brake * tireContact;
     }
@@ -873,6 +933,37 @@ export class KartVehicle {
     }
     this.forwardSpeed += (forwardForce - this.forwardSpeed * drag) / spec.mass * partialStep;
     this.lateralVelocity += (sideForce - this.lateralVelocity * drag) / spec.mass * partialStep;
+    if (sustained && driftHeld) {
+      const driftDirection = this.driftDirection || Math.sign(steerTarget) || 1;
+      const steerIntoDrift = steerTarget * driftDirection;
+      const slipMagnitude = clamp(
+        spec.driftActiveSlipAngle +
+          spec.driftActiveSlipSteerAngle * steerIntoDrift,
+        0.05,
+        1.4,
+      );
+      // A left drift points the body left of its velocity, which is a
+      // positive body-right lateral component (and vice versa for a right
+      // drift).
+      const slipTarget = -driftDirection * slipMagnitude;
+      const planarSpeed = Math.hypot(this.forwardSpeed, this.lateralVelocity);
+      const forwardSign = this.forwardSpeed < 0 ? -1 : 1;
+      const blend = 1 -
+        Math.exp(-partialStep / Math.max(0.01, spec.driftActiveSlipResponseTime));
+      // Rotate the slip angle rather than blending the two velocity
+      // components. Component blending shortens the vector while the angle
+      // changes, which would scrub speed on every substep even though the
+      // sustained drift is supposed to preserve momentum.
+      const currentSlip = Math.atan2(
+        this.lateralVelocity,
+        Math.max(1e-6, forwardSign * this.forwardSpeed),
+      );
+      const nextSlip = currentSlip +
+        wrapAngle(slipTarget - currentSlip) * blend;
+      this.forwardSpeed =
+        forwardSign * planarSpeed * Math.cos(nextSlip);
+      this.lateralVelocity = planarSpeed * Math.sin(nextSlip);
+    }
     if (gripMode && grounded) {
       const gripAuthority = Math.max(0, Math.min(1, tireContact));
       const desiredYawRate = this.forwardSpeed /
@@ -887,13 +978,30 @@ export class KartVehicle {
         -spec.gripLateralDamping * gripMultiplier * gripAuthority * partialStep,
       );
     } else {
-      const yawInertia = spec.mass * spec.yawInertiaPerMass *
-        spec.driftYawInertiaFactor;
-      const yawTorque = spec.halfWheelbase * (frontForce - rearForce) -
-        spec.airFriction * this.yawRate;
-      this.yawRate += yawTorque / yawInertia * partialStep;
+      const driftYawFactor = sustained
+        ? spec.driftActiveYawInertiaFactor
+        : spec.driftYawInertiaFactor;
+      if (sustained && driftHeld) {
+        const driftDirection = this.driftDirection || Math.sign(steerTarget) || 1;
+        const steerIntoDrift = steerTarget * driftDirection;
+        const speedFactor = clamp(speed / 15, 0.35, 1);
+        const steerYawRate = steerIntoDrift >= 0
+          ? spec.driftActiveSteerYawRate * steerIntoDrift
+          : spec.driftActiveCounterYawRate * steerIntoDrift;
+        const targetYawRate = driftDirection * (
+          spec.driftActiveYawRate +
+          steerYawRate
+        ) * speedFactor;
+        this.yawRate += (targetYawRate - this.yawRate) *
+          (1 - Math.exp(-partialStep / spec.driftActiveYawResponseTime));
+      } else {
+        const yawInertia = spec.mass * spec.yawInertiaPerMass * driftYawFactor;
+        const yawTorque = spec.halfWheelbase * (frontForce - rearForce) -
+          spec.airFriction * this.yawRate;
+        this.yawRate += yawTorque / yawInertia * partialStep;
+      }
     }
-    if (this.driftPhaseValue !== "none" &&
+    if (this.driftPhaseValue === "decay" &&
         this.elapsedSeconds - this.driftStartSeconds >= spec.driftSettleTime) {
       this.yawRate *= Math.exp(-spec.driftSettleYawDamping * partialStep);
     }

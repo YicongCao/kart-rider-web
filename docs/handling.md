@@ -18,10 +18,10 @@ REA 的程序集成员分析记录为 `ev_dbdb91c613681b0eeb8a0ad3966a0592d2d32b
 
 | 入弯后秒数 | 0.41 | 0.81 | 1.22 | 1.66 | 1.84 | 2.03 | 2.50 | 2.88 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| P3563 表速（km/h）| 196 | 179 | 160 | 151 | 147 | 152 | 168 | 177 |
-| Web 表速（km/h）| 196 | 177 | 158 | 153 | 152 | 153 | 165 | 175 |
+| P3563 表速（km/h）| 196 | 179 | 160 | 151 | 152 | 152 | 168 | 177 |
+| Web 表速（km/h）| 198 | 183 | 167 | 159 | 157 | 156 | 167 | 176 |
 
-相同输入下，旧版平地净转角约 33°；当前模型为 93.9°，入弯后八段表速依次为 196、177、158、153、152、153、165、175 km/h，与录像采样最大相差 5 km/h。从 Web 起跑线实际加速入弯，车身绕过内侧护栏后与出口直道仍保持正向。
+1.84 秒的原始画面读数为 152 km/h；此前记录的 147 km/h 来自压缩帧，相邻帧为 151、152 km/h。相同输入下，旧版平地净转角约 33°；当前模型约 94.0°，八段表速依次为 198、183、167、159、157、156、167、176 km/h，与录像采样最大相差 8 km/h。从 Web 起跑线实际加速入弯，车身绕过内侧护栏后与出口直道仍保持正向。
 
 ## 抓地模型
 
@@ -40,11 +40,102 @@ REA 的程序集成员分析记录为 `ev_dbdb91c613681b0eeb8a0ad3966a0592d2d32b
 
 ## 漂移期轮胎模型
 
-漂移期使用前后轮侧向力 `980 × 5 × slip`、0.65 米半轴距和 `mass / 12` 平面转动惯量；前后轮滑移角饱和在 ±0.10 弧度。横摆力矩为 `halfWheelbase × (Ff - Fr)`。Shift 按下并带方向时启动一次 0.2 秒触发相，松开 Shift 进入回抓，松开方向键本身不会结束 Shift 仍按住的漂移。
+漂移期基础分支使用前后轮侧向力 `980 × 5 × slip`、0.65 米半轴距和 `mass / 12` 平面转动惯量；前后轮滑移角饱和在 ±0.10 弧度。横摆力矩为 `halfWheelbase × (Ff - Fr)`。Shift 按下并带方向时启动一次 0.2 秒触发相，触发力只作用于前轴并与转向角成正比；后轴在触发相不产生侧向力。集气窗从触发相结束后开启，触发相本身不计入集气。
 
-原版资源中的触发力只用前轴，并与转向角成正比；后轴在触发相不产生侧向力。集气窗从触发相结束后开启，触发相本身不计入集气。
+`updateDriftState()` 接收的是 `driftHeld`，不是“按住 Shift 且有方向”的组合。active 阶段只要 Shift 还按着，即使反打经过零舵也不会结束漂移；只有松开 Shift 才进入 decay。此前把零舵当成松键，会让左右反打反复触发 decay，表现为左右摇摆、几次之后无法继续左转。
 
-恢复出的 H5 轮胎模型在高速漂移时单独使用时转角不足，且保速偏高，因此漂移层保留一组标定值：`driftGripScale=4`、`driftRecoveryGripFactor=3.5`、`driftSlipDrag=0.5`、`driftSettleYawDamping=6`，以及在漂移中把等效转动惯量放大的 `driftYawInertiaFactor=10.44`。触发角另以 `driftTriggerAngleScale=3.6` 补偿尚未还原的 `triggerRawSteer`。这些是 Web 标定，不是从 P3563 直接读取的原值。漂移期保留较大的等效惯量以维持 P3563 的可见转角和速度曲线。
+恢复出的 H5 轮胎模型在高速漂移时单独使用时转角不足，且保速偏高，因此漂移层保留一组 Web 标定值。以下是持续按住 Shift 0.45 秒后启用的分支，不是 P3563 直接读取的原值：
+
+| 参数 | 值 | 作用 |
+| --- | ---: | --- |
+| `driftActiveFrontGripFactor` | 1.25 | 持续漂移前轴抓地倍率 |
+| `driftActiveRearGripFactor` | 0.45 | 持续漂移后轴抓地倍率 |
+| `driftActiveYawRate` | 0.82 rad/s | 中位转向时的基础横摆 |
+| `driftActiveSteerYawRate` | 0.62 rad/s | 向弯内追加的横摆 |
+| `driftActiveCounterYawRate` | 1.5 rad/s | 反打时的回正横摆 |
+| `driftActiveYawResponseTime` | 0.14 s | 横摆目标响应 |
+| `driftActiveSteerAngleScale` | 2 | 持续漂移原始转角倍率 |
+| `driftSlipSaturation` | 0.32 rad | 持续漂移滑移角饱和 |
+| `driftActiveSlipAngle` | 1.14 rad | 中位转向时的车身滑角包络 |
+| `driftActiveSlipSteerAngle` | 0.2 rad | 向弯内追加的滑角 |
+| `driftActiveSlipResponseTime` | 0.18 s | 滑角包络响应 |
+| `driftActiveThrustFactor` | 4 | 持续漂移保速推力 |
+| `driftSustainTime` | 0.45 s | 进入持续漂移的时间 |
+| `driftSlipDrag` | 0.25 | 漂移初期纵向擦滑 |
+
+滑角包络每个物理步只插值滑角，并用原合速度重建前向/侧向分量，而不是分别混合两个速度分量。分别混合时，方向变化会缩短速度向量，持续漂移在 0.25 至 0.45 秒内会掉 40 km/h 以上；改成滑角旋转后保速由 `driftActiveThrustFactor` 控制，首弯和逐弯保速都能同时通过。
+
+松开 Shift 后进入 decay，前后抓地按 `driftRecoveryGripFactor=3.5` 恢复，并在 `driftSettleTime=1.8` 秒后按 `driftSettleYawDamping=6` 收敛横摆。保留较大的 `driftYawInertiaFactor=10.44` 以维持 P3563 的可见转角和速度曲线；触发角另以 `driftTriggerAngleScale=3.6` 补偿尚未还原的 `triggerRawSteer`。
+
+## 逐弯漂移验收
+
+`tests/support/drift-course.ts` 是一个不依赖浏览器、DOM 或 Three.js 渲染的共享模拟器。它只使用 `KartVehicle`、`Route` 和 `TrackCollision`：控制器以 100 Hz 采样，车辆内部仍按 2 ms 固定步积分。Web 版与单机版只要共用这三块运行时模块，就能复用同一套逐弯验收，而不需要截图或人工试玩。
+
+单机版使用不同资产目录时，通过环境变量指向包含 `tracks/<track>/route.json`、`track.gltf` 和 `track.bin` 的根目录：
+
+```bash
+KART_DRIFT_ASSET_ROOT=/path/to/standalone/assets \
+  npx playwright test tests/drift-corners.spec.ts --reporter=line
+```
+
+弯道从生产 `Route` 数据提取，分段参数为 `minLength=18`、`straightMinLength=18`、`flatSlope=0.0025`。小于 20 米的导出伪段会被报告在 `filteredShortCorners`，不当作可漂移弯；城镇高速 `s≈1814..1827` 的 13 米连接折角属于这一类。其余每个弯都独立跑一次完整验收：
+
+- 弯前 5 米起漂，0.3 秒全舵 kick，随后按 8 至 11 米前瞻和 2 米内线跟随。
+- 弯内持续按住 Shift，弯后 8 米才收漂；滑角在弯后 3 米内收敛。
+- 覆盖率至少 0.8，最大断档不超过 0.25 秒，单次漂移至少 0.9 秒。
+- 出弯朝向误差不超过 30°。
+- 弯内侧滑中位数在 20° 至 70°。
+- 漂移保速在 0.75 至 1.2。
+
+```bash
+npx playwright test tests/drift-corners.spec.ts --reporter=line
+```
+
+当前四条赛道共 94 个真实弯全部通过：城镇 13、沙漠 27、森林 33、冰山 21。每条赛道的逐弯明细写入 `test-results/drift-corners/<track>.json`，包含失败原因、覆盖率、出弯误差、侧滑、保速和与原版 KSV 的对比结果。
+
+## 原版 KSV 漂移参考
+
+`tests/fixtures/drift-reference.json` 由客户端自带的 KSV 回放生成，只保留统计量，不包含原始逐帧数据或玩家名：
+
+```bash
+python3 scripts/ksv_drift_reference.py \
+  --inputs /path/to/ksv-directory \
+  --out tests/fixtures/drift-reference.json
+```
+
+当前 fixture 覆盖 31 个回放、17 条原版赛道、218 个 player record 和 7454 段漂移。另有 5610 段由回放轨迹自行检测的弯，其中 3259 段漂移覆盖率不低于 0.8，占 58.09%。原版分布的 p25/中位/p75 为：
+
+| 指标 | p25 | 中位 | p75 |
+| --- | ---: | ---: | ---: |
+| 漂移时长 | 0.90 s | 1.50 s | 2.30 s |
+| 保速 | 0.837 | 0.9703 | 1.0175 |
+| 横摆率 | 28.35 °/s | 55.47 °/s | 91.04 °/s |
+| 侧滑角 | 41.41° | 53.05° | 60.05° |
+
+### 比较口径
+
+逐弯验收会在每个弯刻意按住 Shift 到弯后 8 米，因此 Web 的整段漂移中位约 4.7 秒，远长于原版逐 episode 的 1.5 秒中位。直接把整段 Web episode 拿去比时长，会把“整弯持续漂移”的测试策略误判成手感差异。
+
+因此效果对比取每次起漂后的第一个 1.5 秒窗口，只比较同一时间基上的保速、横摆率和侧滑角；整段 episode 时长仍写入报告，并用 `rawDurationNote` 明确标注不参与效果判定。报告同时给出 Web 中位数、原版 p25/p50/p75、偏差百分比和原版 IQR 命中情况。`tests/drift-corners.spec.ts` 要求三个效果指标的中位数都落在原版 IQR 内。
+
+当前 94 个窗口的实测中位数：
+
+| 赛道 | 横摆率 | 侧滑角 | 保速 |
+| --- | ---: | ---: | ---: |
+| 城镇 | 35.2 °/s | 42.8° | 1.002 |
+| 沙漠 | 62.0 °/s | 56.8° | 0.998 |
+| 森林 | 45.2 °/s | 47.9° | 1.003 |
+| 冰山 | 46.5 °/s | 49.7° | 1.003 |
+| 合计 | 47.2 °/s | 48.8° | 1.000 |
+
+这些中位数都落在原版横摆 28.35 至 91.04 °/s、侧滑 41.41° 至 60.05°、保速 0.837 至 1.0175 的 IQR 内。沙漠的数值最接近原版中位，城镇和森林包含更多长缓弯，因此横摆率低于跨赛道中位。
+
+### 证据边界
+
+- 原版分布跨 17 条赛道，不是 Web 同赛道逐弯映射。`pathCorners` 是每个回放自身轨迹的统计，不能直接对到 Web `route.json` 的坐标。
+- 城镇高速没有原版 KSV 回放，因此城镇只做硬指标和跨赛道分布检查，不能声称逐弯对应原版。
+- 原版记录的是 10 Hz 车辆状态和漂移效果位，没有按键按下/释放时刻；Web 的按键时序来自控制器与实玩标定。
+- 逐弯测试证明“抓地/漂移可以正向通过这个弯”，不等于证明该线路是最快圈速。圈速上限仍由 `tests/grip-lap.spec.ts` 的抓地整圈验收单独约束。
 
 ## 出弯小喷与连喷
 

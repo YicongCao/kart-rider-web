@@ -1,0 +1,1016 @@
+{
+  "corpus": {
+    "duration": {
+      "median": 1.5,
+      "p10": 0.5,
+      "p25": 0.9,
+      "p75": 2.3,
+      "p90": 3.5
+    },
+    "episodeCount": 7454,
+    "playerRecordCount": 218,
+    "replayCount": 31,
+    "retention": {
+      "median": 0.9703,
+      "p10": 0.7055,
+      "p25": 0.837,
+      "p75": 1.0175,
+      "p90": 1.0951
+    },
+    "sideSlip": {
+      "median": 53.051,
+      "p10": 20.923,
+      "p25": 41.414,
+      "p75": 60.045,
+      "p90": 69.284
+    },
+    "sideSlipMax": {
+      "median": 70.575,
+      "p10": 34.435,
+      "p25": 57.812,
+      "p75": 92.567,
+      "p90": 95.109
+    },
+    "trackCount": 17,
+    "yawRate": {
+      "median": 55.473,
+      "p10": 11.993,
+      "p25": 28.352,
+      "p75": 91.043,
+      "p90": 128.957
+    }
+  },
+  "method": {
+    "driftEffects": [
+      2,
+      3
+    ],
+    "episodeSampling": "20 midpoint duration quantiles after deterministic sort",
+    "maxDropoutSeconds": 0.2,
+    "minDurationSeconds": 0.4,
+    "pathCornerDetection": {
+      "basis": "per-replay racing-line corner test, not a route-coordinate mapping to the Web track; repeated laps contribute repeated sections",
+      "coverage": "fraction of 10 Hz samples inside each corner with drift effect 2 or 3",
+      "coverageThreshold": 0.8,
+      "jumpSplit": "position jumps > max(40, 5x median step)",
+      "minLength": 18.0,
+      "minTurnDegrees": 35.0,
+      "sampleStep": 2.0,
+      "segmentation": "resample each continuous x/y path at fixed distance, smooth position tangents, split at straights and heading inflections",
+      "straightMinLength": 35.0
+    },
+    "percentiles": "linear interpolation between closest ranks",
+    "retention": "exit planar speed / entry planar speed",
+    "sampleRateHz": 10.0,
+    "sideSlip": "absolute velocity heading minus body heading; episode median and max",
+    "sideSlipSpeedFloor": 5.0,
+    "speedUnits": "replay units per second; output reports ratios and rates only",
+    "speedWindowFrames": 5,
+    "yawRate": "absolute unwrapped heading change per second"
+  },
+  "pathCorners": {
+    "cornerCount": 5610,
+    "coverageThreshold": 0.8,
+    "driftedCornerCount": 3259,
+    "driftedFraction": 0.5809,
+    "medianCoverage": 0.8387,
+    "tracks": {
+      "camelot_R01": {
+        "cornerCount": 208,
+        "driftedCornerCount": 135,
+        "driftedFraction": 0.649,
+        "medianCoverage": 0.8586
+      },
+      "castle_R01": {
+        "cornerCount": 517,
+        "driftedCornerCount": 314,
+        "driftedFraction": 0.6074,
+        "medianCoverage": 0.8421
+      },
+      "china_R01_rvs": {
+        "cornerCount": 556,
+        "driftedCornerCount": 343,
+        "driftedFraction": 0.6169,
+        "medianCoverage": 0.8571
+      },
+      "china_R11": {
+        "cornerCount": 205,
+        "driftedCornerCount": 97,
+        "driftedFraction": 0.4732,
+        "medianCoverage": 0.7857
+      },
+      "china_R12": {
+        "cornerCount": 357,
+        "driftedCornerCount": 214,
+        "driftedFraction": 0.5994,
+        "medianCoverage": 0.8442
+      },
+      "desert_R01_rvs": {
+        "cornerCount": 252,
+        "driftedCornerCount": 137,
+        "driftedFraction": 0.5437,
+        "medianCoverage": 0.822
+      },
+      "desert_R02": {
+        "cornerCount": 251,
+        "driftedCornerCount": 159,
+        "driftedFraction": 0.6335,
+        "medianCoverage": 0.8571
+      },
+      "factory_R01": {
+        "cornerCount": 333,
+        "driftedCornerCount": 175,
+        "driftedFraction": 0.5255,
+        "medianCoverage": 0.8125
+      },
+      "fairy_R01": {
+        "cornerCount": 178,
+        "driftedCornerCount": 84,
+        "driftedFraction": 0.4719,
+        "medianCoverage": 0.7857
+      },
+      "forest_R04": {
+        "cornerCount": 391,
+        "driftedCornerCount": 212,
+        "driftedFraction": 0.5422,
+        "medianCoverage": 0.8077
+      },
+      "jurassic_R01": {
+        "cornerCount": 456,
+        "driftedCornerCount": 195,
+        "driftedFraction": 0.4276,
+        "medianCoverage": 0.75
+      },
+      "maple_R03": {
+        "cornerCount": 187,
+        "driftedCornerCount": 123,
+        "driftedFraction": 0.6578,
+        "medianCoverage": 0.871
+      },
+      "mechanic_R01": {
+        "cornerCount": 236,
+        "driftedCornerCount": 150,
+        "driftedFraction": 0.6356,
+        "medianCoverage": 0.8571
+      },
+      "moonhill_R02": {
+        "cornerCount": 572,
+        "driftedCornerCount": 369,
+        "driftedFraction": 0.6451,
+        "medianCoverage": 0.8571
+      },
+      "northeu_R03": {
+        "cornerCount": 510,
+        "driftedCornerCount": 332,
+        "driftedFraction": 0.651,
+        "medianCoverage": 0.85
+      },
+      "wkc_R05": {
+        "cornerCount": 183,
+        "driftedCornerCount": 108,
+        "driftedFraction": 0.5902,
+        "medianCoverage": 0.8421
+      },
+      "world_R02": {
+        "cornerCount": 218,
+        "driftedCornerCount": 112,
+        "driftedFraction": 0.5138,
+        "medianCoverage": 0.8
+      }
+    }
+  },
+  "representativeEpisodes": [
+    {
+      "duration": 0.4,
+      "retention": 1.0,
+      "sideSlip": 34.803,
+      "sideSlipMax": 40.063,
+      "yawRate": 117.652
+    },
+    {
+      "duration": 0.5,
+      "retention": 1.0083,
+      "sideSlip": 19.47,
+      "sideSlipMax": 25.832,
+      "yawRate": 44.711
+    },
+    {
+      "duration": 0.5,
+      "retention": 0.9938,
+      "sideSlip": 65.742,
+      "sideSlipMax": 70.825,
+      "yawRate": 103.551
+    },
+    {
+      "duration": 0.6,
+      "retention": 1.0287,
+      "sideSlip": 51.218,
+      "sideSlipMax": 72.574,
+      "yawRate": 77.903
+    },
+    {
+      "duration": 0.8,
+      "retention": 1.0566,
+      "sideSlip": 45.315,
+      "sideSlipMax": 53.101,
+      "yawRate": 109.426
+    },
+    {
+      "duration": 1.0,
+      "retention": 1.0995,
+      "sideSlip": 47.715,
+      "sideSlipMax": 60.08,
+      "yawRate": 19.078
+    },
+    {
+      "duration": 1.1,
+      "retention": 0.7801,
+      "sideSlip": 63.537,
+      "sideSlipMax": 88.959,
+      "yawRate": 98.856
+    },
+    {
+      "duration": 1.2,
+      "retention": 0.8267,
+      "sideSlip": 61.443,
+      "sideSlipMax": 73.255,
+      "yawRate": 107.678
+    },
+    {
+      "duration": 1.3,
+      "retention": 0.9823,
+      "sideSlip": 57.725,
+      "sideSlipMax": 66.24,
+      "yawRate": 78.153
+    },
+    {
+      "duration": 1.4,
+      "retention": 0.9408,
+      "sideSlip": 56.479,
+      "sideSlipMax": 63.285,
+      "yawRate": 77.194
+    },
+    {
+      "duration": 1.5,
+      "retention": 0.8929,
+      "sideSlip": 65.448,
+      "sideSlipMax": 81.463,
+      "yawRate": 85.173
+    },
+    {
+      "duration": 1.7,
+      "retention": 0.7706,
+      "sideSlip": 48.118,
+      "sideSlipMax": 70.287,
+      "yawRate": 43.574
+    },
+    {
+      "duration": 1.8,
+      "retention": 0.6487,
+      "sideSlip": 88.48,
+      "sideSlipMax": 95.023,
+      "yawRate": 132.126
+    },
+    {
+      "duration": 2.0,
+      "retention": 1.2919,
+      "sideSlip": 52.877,
+      "sideSlipMax": 58.505,
+      "yawRate": 51.076
+    },
+    {
+      "duration": 2.2,
+      "retention": 0.9131,
+      "sideSlip": 53.151,
+      "sideSlipMax": 83.873,
+      "yawRate": 36.729
+    },
+    {
+      "duration": 2.4,
+      "retention": 1.0079,
+      "sideSlip": 62.456,
+      "sideSlipMax": 68.922,
+      "yawRate": 33.425
+    },
+    {
+      "duration": 2.7,
+      "retention": 0.9606,
+      "sideSlip": 63.496,
+      "sideSlipMax": 94.457,
+      "yawRate": 61.514
+    },
+    {
+      "duration": 3.2,
+      "retention": 0.8767,
+      "sideSlip": 52.962,
+      "sideSlipMax": 94.675,
+      "yawRate": 51.301
+    },
+    {
+      "duration": 3.7,
+      "retention": 0.9042,
+      "sideSlip": 57.155,
+      "sideSlipMax": 75.986,
+      "yawRate": 35.892
+    },
+    {
+      "duration": 4.8,
+      "retention": 1.145,
+      "sideSlip": 46.503,
+      "sideSlipMax": 75.456,
+      "yawRate": 13.067
+    }
+  ],
+  "schemaVersion": 1,
+  "tracks": {
+    "camelot_R01": {
+      "duration": {
+        "median": 1.6,
+        "p10": 0.5,
+        "p25": 0.8,
+        "p75": 2.0,
+        "p90": 3.5
+      },
+      "episodeCount": 255,
+      "playerRecordCount": 8,
+      "replayCount": 1,
+      "retention": {
+        "median": 0.9571,
+        "p10": 0.8132,
+        "p25": 0.8669,
+        "p75": 1.0031,
+        "p90": 1.0346
+      },
+      "sideSlip": {
+        "median": 46.026,
+        "p10": 17.357,
+        "p25": 35.779,
+        "p75": 51.875,
+        "p90": 56.191
+      },
+      "sideSlipMax": {
+        "median": 62.355,
+        "p10": 25.821,
+        "p25": 55.863,
+        "p75": 78.851,
+        "p90": 91.955
+      },
+      "yawRate": {
+        "median": 37.995,
+        "p10": 16.724,
+        "p25": 25.111,
+        "p75": 65.041,
+        "p90": 92.621
+      }
+    },
+    "castle_R01": {
+      "duration": {
+        "median": 1.7,
+        "p10": 0.7,
+        "p25": 1.1,
+        "p75": 2.3,
+        "p90": 3.3
+      },
+      "episodeCount": 646,
+      "playerRecordCount": 16,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.9792,
+        "p10": 0.6834,
+        "p25": 0.8473,
+        "p75": 1.0387,
+        "p90": 1.1352
+      },
+      "sideSlip": {
+        "median": 55.605,
+        "p10": 43.28,
+        "p25": 51.759,
+        "p75": 63.238,
+        "p90": 78.983
+      },
+      "sideSlipMax": {
+        "median": 74.938,
+        "p10": 56.591,
+        "p25": 63.226,
+        "p75": 93.085,
+        "p90": 95.335
+      },
+      "yawRate": {
+        "median": 65.145,
+        "p10": 19.047,
+        "p25": 36.85,
+        "p75": 112.727,
+        "p90": 141.902
+      }
+    },
+    "china_R01_rvs": {
+      "duration": {
+        "median": 1.8,
+        "p10": 0.5,
+        "p25": 1.0,
+        "p75": 2.5,
+        "p90": 3.99
+      },
+      "episodeCount": 612,
+      "playerRecordCount": 18,
+      "replayCount": 3,
+      "retention": {
+        "median": 0.982,
+        "p10": 0.6976,
+        "p25": 0.8333,
+        "p75": 1.0281,
+        "p90": 1.1245
+      },
+      "sideSlip": {
+        "median": 51.599,
+        "p10": 21.73,
+        "p25": 38.544,
+        "p75": 57.311,
+        "p90": 64.243
+      },
+      "sideSlipMax": {
+        "median": 70.032,
+        "p10": 38.038,
+        "p25": 56.512,
+        "p75": 92.739,
+        "p90": 94.68
+      },
+      "yawRate": {
+        "median": 42.258,
+        "p10": 11.829,
+        "p25": 24.665,
+        "p75": 87.947,
+        "p90": 114.488
+      }
+    },
+    "china_R11": {
+      "duration": {
+        "median": 1.3,
+        "p10": 0.5,
+        "p25": 0.9,
+        "p75": 2.0,
+        "p90": 2.7
+      },
+      "episodeCount": 307,
+      "playerRecordCount": 10,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.974,
+        "p10": 0.7707,
+        "p25": 0.8823,
+        "p75": 1.0126,
+        "p90": 1.0525
+      },
+      "sideSlip": {
+        "median": 52.27,
+        "p10": 20.547,
+        "p25": 42.216,
+        "p75": 56.942,
+        "p90": 64.275
+      },
+      "sideSlipMax": {
+        "median": 66.368,
+        "p10": 35.557,
+        "p25": 58.055,
+        "p75": 78.996,
+        "p90": 91.997
+      },
+      "yawRate": {
+        "median": 64.618,
+        "p10": 14.13,
+        "p25": 35.857,
+        "p75": 90.245,
+        "p90": 121.647
+      }
+    },
+    "china_R12": {
+      "duration": {
+        "median": 1.5,
+        "p10": 0.5,
+        "p25": 1.0,
+        "p75": 2.325,
+        "p90": 3.6
+      },
+      "episodeCount": 560,
+      "playerRecordCount": 18,
+      "replayCount": 3,
+      "retention": {
+        "median": 0.951,
+        "p10": 0.7123,
+        "p25": 0.8234,
+        "p75": 1.0083,
+        "p90": 1.0748
+      },
+      "sideSlip": {
+        "median": 54.086,
+        "p10": 19.83,
+        "p25": 40.099,
+        "p75": 60.802,
+        "p90": 67.127
+      },
+      "sideSlipMax": {
+        "median": 71.306,
+        "p10": 33.87,
+        "p25": 57.716,
+        "p75": 92.55,
+        "p90": 95.687
+      },
+      "yawRate": {
+        "median": 60.567,
+        "p10": 13.652,
+        "p25": 27.505,
+        "p75": 87.599,
+        "p90": 120.087
+      }
+    },
+    "desert_R01_rvs": {
+      "duration": {
+        "median": 1.6,
+        "p10": 0.5,
+        "p25": 1.1,
+        "p75": 2.5,
+        "p90": 3.8
+      },
+      "episodeCount": 341,
+      "playerRecordCount": 8,
+      "replayCount": 1,
+      "retention": {
+        "median": 0.9553,
+        "p10": 0.6678,
+        "p25": 0.7647,
+        "p75": 1.0164,
+        "p90": 1.1283
+      },
+      "sideSlip": {
+        "median": 54.323,
+        "p10": 24.92,
+        "p25": 44.933,
+        "p75": 63.783,
+        "p90": 70.463
+      },
+      "sideSlipMax": {
+        "median": 77.993,
+        "p10": 35.202,
+        "p25": 60.971,
+        "p75": 93.095,
+        "p90": 95.651
+      },
+      "yawRate": {
+        "median": 60.194,
+        "p10": 17.283,
+        "p25": 37.76,
+        "p75": 103.194,
+        "p90": 143.788
+      }
+    },
+    "desert_R02": {
+      "duration": {
+        "median": 1.3,
+        "p10": 0.5,
+        "p25": 0.7,
+        "p75": 2.0,
+        "p90": 3.0
+      },
+      "episodeCount": 301,
+      "playerRecordCount": 8,
+      "replayCount": 1,
+      "retention": {
+        "median": 0.9843,
+        "p10": 0.7774,
+        "p25": 0.8651,
+        "p75": 1.0207,
+        "p90": 1.135
+      },
+      "sideSlip": {
+        "median": 48.408,
+        "p10": 19.04,
+        "p25": 27.699,
+        "p75": 56.737,
+        "p90": 62.599
+      },
+      "sideSlipMax": {
+        "median": 67.315,
+        "p10": 26.81,
+        "p25": 41.015,
+        "p75": 87.347,
+        "p90": 92.459
+      },
+      "yawRate": {
+        "median": 47.659,
+        "p10": 5.568,
+        "p25": 19.981,
+        "p75": 84.705,
+        "p90": 109.733
+      }
+    },
+    "factory_R01": {
+      "duration": {
+        "median": 1.2,
+        "p10": 0.5,
+        "p25": 0.7,
+        "p75": 2.1,
+        "p90": 3.2
+      },
+      "episodeCount": 479,
+      "playerRecordCount": 16,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.969,
+        "p10": 0.6914,
+        "p25": 0.8064,
+        "p75": 1.02,
+        "p90": 1.132
+      },
+      "sideSlip": {
+        "median": 55.035,
+        "p10": 15.631,
+        "p25": 42.021,
+        "p75": 67.287,
+        "p90": 78.401
+      },
+      "sideSlipMax": {
+        "median": 85.48,
+        "p10": 46.558,
+        "p25": 61.207,
+        "p75": 94.533,
+        "p90": 100.152
+      },
+      "yawRate": {
+        "median": 64.648,
+        "p10": 12.07,
+        "p25": 29.096,
+        "p75": 106.399,
+        "p90": 163.675
+      }
+    },
+    "fairy_R01": {
+      "duration": {
+        "median": 1.4,
+        "p10": 0.5,
+        "p25": 0.8,
+        "p75": 2.0,
+        "p90": 2.99
+      },
+      "episodeCount": 332,
+      "playerRecordCount": 8,
+      "replayCount": 1,
+      "retention": {
+        "median": 0.9349,
+        "p10": 0.6762,
+        "p25": 0.7517,
+        "p75": 1.0238,
+        "p90": 1.1172
+      },
+      "sideSlip": {
+        "median": 56.673,
+        "p10": 19.975,
+        "p25": 44.123,
+        "p75": 66.895,
+        "p90": 74.699
+      },
+      "sideSlipMax": {
+        "median": 91.723,
+        "p10": 37.172,
+        "p25": 63.548,
+        "p75": 94.818,
+        "p90": 98.079
+      },
+      "yawRate": {
+        "median": 79.771,
+        "p10": 23.434,
+        "p25": 40.991,
+        "p75": 120.568,
+        "p90": 146.992
+      }
+    },
+    "forest_R04": {
+      "duration": {
+        "median": 1.3,
+        "p10": 0.5,
+        "p25": 0.7,
+        "p75": 2.0,
+        "p90": 3.0
+      },
+      "episodeCount": 485,
+      "playerRecordCount": 16,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.9437,
+        "p10": 0.6238,
+        "p25": 0.7625,
+        "p75": 1.0023,
+        "p90": 1.0849
+      },
+      "sideSlip": {
+        "median": 51.627,
+        "p10": 22.613,
+        "p25": 37.874,
+        "p75": 67.045,
+        "p90": 76.221
+      },
+      "sideSlipMax": {
+        "median": 92.11,
+        "p10": 32.771,
+        "p25": 53.845,
+        "p75": 94.342,
+        "p90": 96.106
+      },
+      "yawRate": {
+        "median": 54.578,
+        "p10": 11.868,
+        "p25": 30.582,
+        "p75": 110.11,
+        "p90": 145.867
+      }
+    },
+    "jurassic_R01": {
+      "duration": {
+        "median": 1.4,
+        "p10": 0.5,
+        "p25": 0.8,
+        "p75": 2.2,
+        "p90": 3.7
+      },
+      "episodeCount": 574,
+      "playerRecordCount": 16,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.9782,
+        "p10": 0.7983,
+        "p25": 0.8971,
+        "p75": 1.0237,
+        "p90": 1.1168
+      },
+      "sideSlip": {
+        "median": 50.935,
+        "p10": 23.12,
+        "p25": 41.871,
+        "p75": 57.498,
+        "p90": 64.348
+      },
+      "sideSlipMax": {
+        "median": 66.095,
+        "p10": 41.689,
+        "p25": 57.706,
+        "p75": 78.384,
+        "p90": 92.374
+      },
+      "yawRate": {
+        "median": 42.852,
+        "p10": 7.603,
+        "p25": 20.359,
+        "p75": 88.773,
+        "p90": 108.603
+      }
+    },
+    "maple_R03": {
+      "duration": {
+        "median": 1.5,
+        "p10": 0.5,
+        "p25": 0.8,
+        "p75": 2.1,
+        "p90": 3.2
+      },
+      "episodeCount": 327,
+      "playerRecordCount": 8,
+      "replayCount": 1,
+      "retention": {
+        "median": 0.9978,
+        "p10": 0.8174,
+        "p25": 0.9305,
+        "p75": 1.0433,
+        "p90": 1.1241
+      },
+      "sideSlip": {
+        "median": 54.687,
+        "p10": 18.684,
+        "p25": 44.804,
+        "p75": 58.307,
+        "p90": 62.601
+      },
+      "sideSlipMax": {
+        "median": 65.601,
+        "p10": 31.83,
+        "p25": 58.266,
+        "p75": 74.391,
+        "p90": 91.275
+      },
+      "yawRate": {
+        "median": 44.094,
+        "p10": 9.214,
+        "p25": 23.825,
+        "p75": 79.391,
+        "p90": 107.021
+      }
+    },
+    "mechanic_R01": {
+      "duration": {
+        "median": 1.8,
+        "p10": 0.6,
+        "p25": 1.2,
+        "p75": 2.9,
+        "p90": 3.5
+      },
+      "episodeCount": 344,
+      "playerRecordCount": 10,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.9738,
+        "p10": 0.6878,
+        "p25": 0.8427,
+        "p75": 1.0251,
+        "p90": 1.0769
+      },
+      "sideSlip": {
+        "median": 53.59,
+        "p10": 19.781,
+        "p25": 42.343,
+        "p75": 57.897,
+        "p90": 63.516
+      },
+      "sideSlipMax": {
+        "median": 69.127,
+        "p10": 33.412,
+        "p25": 56.024,
+        "p75": 91.418,
+        "p90": 94.099
+      },
+      "yawRate": {
+        "median": 51.839,
+        "p10": 11.054,
+        "p25": 33.231,
+        "p75": 79.29,
+        "p90": 91.512
+      }
+    },
+    "moonhill_R02": {
+      "duration": {
+        "median": 1.4,
+        "p10": 0.5,
+        "p25": 0.7,
+        "p75": 2.4,
+        "p90": 3.6
+      },
+      "episodeCount": 698,
+      "playerRecordCount": 18,
+      "replayCount": 3,
+      "retention": {
+        "median": 0.9658,
+        "p10": 0.7235,
+        "p25": 0.8502,
+        "p75": 1.0215,
+        "p90": 1.0798
+      },
+      "sideSlip": {
+        "median": 55.869,
+        "p10": 28.083,
+        "p25": 45.768,
+        "p75": 64.569,
+        "p90": 72.612
+      },
+      "sideSlipMax": {
+        "median": 81.241,
+        "p10": 52.528,
+        "p25": 61.199,
+        "p75": 93.941,
+        "p90": 96.12
+      },
+      "yawRate": {
+        "median": 67.453,
+        "p10": 11.416,
+        "p25": 31.4,
+        "p75": 113.889,
+        "p90": 162.554
+      }
+    },
+    "northeu_R03": {
+      "duration": {
+        "median": 1.7,
+        "p10": 0.5,
+        "p25": 1.1,
+        "p75": 2.7,
+        "p90": 3.6
+      },
+      "episodeCount": 562,
+      "playerRecordCount": 16,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.9337,
+        "p10": 0.6797,
+        "p25": 0.7935,
+        "p75": 1.0072,
+        "p90": 1.0854
+      },
+      "sideSlip": {
+        "median": 53.015,
+        "p10": 17.585,
+        "p25": 45.713,
+        "p75": 57.799,
+        "p90": 64.238
+      },
+      "sideSlipMax": {
+        "median": 73.443,
+        "p10": 32.805,
+        "p25": 56.185,
+        "p75": 93.11,
+        "p90": 94.825
+      },
+      "yawRate": {
+        "median": 55.702,
+        "p10": 13.46,
+        "p25": 29.231,
+        "p75": 89.367,
+        "p90": 121.625
+      }
+    },
+    "wkc_R05": {
+      "duration": {
+        "median": 1.45,
+        "p10": 0.5,
+        "p25": 0.6,
+        "p75": 2.4,
+        "p90": 3.87
+      },
+      "episodeCount": 264,
+      "playerRecordCount": 8,
+      "replayCount": 1,
+      "retention": {
+        "median": 0.9913,
+        "p10": 0.7424,
+        "p25": 0.9081,
+        "p75": 1.0102,
+        "p90": 1.0556
+      },
+      "sideSlip": {
+        "median": 44.345,
+        "p10": 18.644,
+        "p25": 28.579,
+        "p75": 53.361,
+        "p90": 57.754
+      },
+      "sideSlipMax": {
+        "median": 58.499,
+        "p10": 25.8,
+        "p25": 38.725,
+        "p75": 71.091,
+        "p90": 93.464
+      },
+      "yawRate": {
+        "median": 36.443,
+        "p10": 9.267,
+        "p25": 18.807,
+        "p75": 64.533,
+        "p90": 92.305
+      }
+    },
+    "world_R02": {
+      "duration": {
+        "median": 1.3,
+        "p10": 0.5,
+        "p25": 0.7,
+        "p75": 2.3,
+        "p90": 2.74
+      },
+      "episodeCount": 367,
+      "playerRecordCount": 16,
+      "replayCount": 2,
+      "retention": {
+        "median": 0.9832,
+        "p10": 0.7405,
+        "p25": 0.8669,
+        "p75": 1.0075,
+        "p90": 1.05
+      },
+      "sideSlip": {
+        "median": 51.612,
+        "p10": 18.728,
+        "p25": 25.774,
+        "p75": 57.22,
+        "p90": 64.09
+      },
+      "sideSlipMax": {
+        "median": 63.698,
+        "p10": 27.914,
+        "p25": 50.113,
+        "p75": 85.438,
+        "p90": 93.899
+      },
+      "yawRate": {
+        "median": 60.694,
+        "p10": 11.544,
+        "p25": 30.696,
+        "p75": 79.528,
+        "p90": 93.543
+      }
+    }
+  },
+  "units": {
+    "duration": "seconds",
+    "pathCornerCoverage": "ratio",
+    "pathCornerDriftedFraction": "ratio",
+    "retention": "ratio",
+    "sideSlip": "degrees",
+    "sideSlipMax": "degrees",
+    "yawRate": "degrees/second"
+  }
+}
