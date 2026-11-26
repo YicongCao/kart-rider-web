@@ -1,11 +1,13 @@
 import {
   AdditiveBlending,
+  type AnimationAction,
   AnimationMixer,
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
   Group,
   LinearFilter,
+  LoopOnce,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -25,6 +27,13 @@ import type { RouteSample } from "../types";
 
 const KART_URL = "/assets/karts/cotton1/kart.gltf";
 const CHARACTER_URL = "/assets/characters/dao/dao.gltf";
+const RIDER_CLIPS = {
+  forward: "f40",
+  steerLeft: "f41",
+  steerRight: "f42",
+  lookBackLeft: "f46",
+  lookBackRight: "f45",
+};
 const MAX_TRAIL_VERTICES = 4200;
 const REAR_TIRE_EDGES = [-0.76, -0.48, 0.48, 0.76];
 
@@ -56,6 +65,8 @@ export class KartView {
   private scene: Scene;
   private rider: Object3D | null = null;
   private mixer: AnimationMixer | null = null;
+  private riderActions = new Map<string, AnimationAction>();
+  private activeRiderAction: AnimationAction | null = null;
   private handle: Mesh | null = null;
   private wheels: Array<Mesh | null> = [];
   private baseMatrices = new Map<Mesh, Matrix4>();
@@ -120,22 +131,24 @@ export class KartView {
     const kartScene = this.prepareModel(kart, true);
     this.model.add(kartScene);
 
-    // The official seat is Relement (sixth ReKart child). The character rides
-    // with its authored f45 pose, already posed in the Y-up rider rig.
+    // The seat node places the Y-up character rig in the kart.
     const rekart = kartScene.getObjectByName("ReKart");
     const riderRoot = character.scene.getObjectByName("char_root");
     if (rekart && riderRoot) {
       const seat = rekart.children[6];
       seat.add(riderRoot);
       this.rider = riderRoot;
-      this.mixer = new AnimationMixer(riderRoot);
-      const ridePose =
-        character.animations.find((animation) => animation.name === "f45") ??
-        character.animations.find((animation) => animation.name === "f40") ??
-        character.animations[0];
-      if (ridePose) {
-        const action = this.mixer.clipAction(ridePose);
-        action.play();
+      this.mixer = new AnimationMixer(this.rider);
+      for (const name of Object.values(RIDER_CLIPS)) {
+        const clip = character.animations.find((animation) => animation.name === name);
+        if (!clip) continue;
+        const action = this.mixer.clipAction(clip);
+        if (name !== RIDER_CLIPS.forward) {
+          action.setLoop(LoopOnce, 1);
+          action.clampWhenFinished = true;
+        }
+        action.weight = name === RIDER_CLIPS.forward ? 1 : 0;
+        this.riderActions.set(name, action);
       }
 
       this.handle = (rekart.children[1]?.children[0] as Mesh | undefined) ?? null;
@@ -180,7 +193,7 @@ export class KartView {
     this.bounce += (targetBounce - this.bounce) * Math.min(1, dt * 12);
     this.model.position.y = this.bounce;
 
-    this.mixer?.update(dt);
+    this.updateRider(state, steer, dt);
     this.wheelSpin = (this.wheelSpin + Math.abs(state.speed) * dt * 3.2) % (Math.PI * 2);
     const steerRotation = new Matrix4().makeRotationZ(-steer * 0.62);
     const spinRotation = new Matrix4().makeRotationX(this.wheelSpin);
@@ -227,6 +240,35 @@ export class KartView {
 
   setVisible(visible: boolean) {
     this.root.visible = visible && this.loaded;
+  }
+
+  private updateRider(state: VehicleState, steer: number, dt: number) {
+    let clip = RIDER_CLIPS.forward;
+    if (state.speed < -0.5) {
+      const keepLeft = steer === 0 && this.activeRiderAction?.getClip().name === RIDER_CLIPS.lookBackLeft;
+      clip = steer < 0 || keepLeft ? RIDER_CLIPS.lookBackLeft : RIDER_CLIPS.lookBackRight;
+    } else if (!state.drifting && steer !== 0) {
+      clip = steer < 0 ? RIDER_CLIPS.steerLeft : RIDER_CLIPS.steerRight;
+    }
+    const next = this.riderActions.get(clip) ?? this.riderActions.get(RIDER_CLIPS.forward);
+    if (!next || !this.mixer) return;
+
+    if (next !== this.activeRiderAction || state.time === 0) {
+      next.reset().play();
+      this.activeRiderAction = next;
+    }
+    // Blend from the current weights so rapid steering changes can interrupt a pose smoothly.
+    const blend = state.time === 0 ? 1 : 1 - Math.exp(-18 * dt);
+    for (const action of this.riderActions.values()) {
+      const target = action === next ? 1 : 0;
+      if (action.weight === target) continue;
+      action.weight += (target - action.weight) * blend;
+      if (target === 0 && action.weight < 0.001) {
+        action.weight = 0;
+        action.stop();
+      }
+    }
+    this.mixer.update(dt);
   }
 
   dispose() {
