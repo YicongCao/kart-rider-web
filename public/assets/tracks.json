@@ -21,7 +21,7 @@
     "skyColor": "#8fc4e8",
     "fogColor": "#b9d9b6",
     "halfWidth": 24.0,
-    "length": 4631.26
+    "length": 3771.54
   },
   {
     "id": "forest",
@@ -93,6 +93,6 @@
     "skyColor": "#9fd6f2",
     "fogColor": "#d8edf4",
     "halfWidth": 13.5,
-    "length": 4138.09
+    "length": 5040.72
   }
 ]

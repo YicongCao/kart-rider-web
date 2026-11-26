@@ -12,6 +12,8 @@
  * which is the same convention.
  */
 
+import type { TrackWallContact } from "./track-collision";
+
 export const FIXED_STEP_SECONDS = 0.002;
 
 export type DriftPhase = "none" | "trigger" | "active" | "decay";
@@ -71,37 +73,35 @@ export interface VehicleTuning {
   steerConstraint: number;
   maxSteerDeg: number;
   steeringExponentialScale: number;
-  /** First-order steering response, per second. */
-  steeringResponse: number;
+  /** Planar throttle calibration against the recorded P3563 straight. */
+  driveScale: number;
   tireStiffness: number;
   /** Per-axle tire force multiplier (official tire grip factor calibration). */
   tireGrip: number;
-  tireSlipLimitRad: number;
   halfWheelbase: number;
-  yawInertiaDiv: number;
-  yawRateLimit: number;
-  driftYawRateLimit: number;
+  /** Planar moment of inertia divided by mass, in square metres. */
+  yawInertiaPerMass: number;
   yawDamping: number;
   straightYawDamping: number;
-  normalLateralDamping: number;
-  driftLateralDamping: number;
-  decayLateralDamping: number;
   cornerDrawFactor: number;
   driftTrigTime: number;
   driftDecayTime: number;
   driftSlipFactor: number;
-  driftTriggerFrontGrip: number;
-  /** Extra yaw-rate impulse at drift ignition, rad/s. */
-  driftEntryYaw: number;
+  driftTriggerFactor: number;
+  driftEscapeForce: number;
+  tireResponseTime: number;
   driftStopSpeed: number;
   driftMaxGauge: number;
-  /** Official slow-charge calibration from tools/kartemu/kart.html. */
+  /** Gauge gain calibrated in the Web simulator. */
   driftGaugeScale: number;
   boostDuration: number;
   startBoostDuration: number;
   startBoostWindow: number;
   wallRestitution: number;
   vehicleHalfWidth: number;
+  vehicleHalfLength: number;
+  collisionCenterForward: number;
+  driftGaugePreserveOnImpact: number;
 }
 
 export const DEFAULT_TUNING: VehicleTuning = {
@@ -115,26 +115,25 @@ export const DEFAULT_TUNING: VehicleTuning = {
   startBoostAccelFactor: 1.494,
   steerConstraint: 22.25,
   maxSteerDeg: 10,
+  // P3563 S7 uses the Default profile in ExcData.SpeedType. Cotton1 adds
+  // 10 N forward and 50 N reverse through its own BodyParam resource.
+  // The planar projection's effective thrust matches the 173 → 199 km/h
+  // straight in the P3563 recording (2.56 s). The stock force stays in N.
   steeringExponentialScale: 1,
-  steeringResponse: 14,
+  driveScale: 1.175,
   tireStiffness: 980,
   tireGrip: 5,
-  tireSlipLimitRad: 0.1,
   halfWheelbase: 0.5,
-  yawInertiaDiv: 12,
-  yawRateLimit: 2.5,
-  driftYawRateLimit: 1.35,
-  yawDamping: 1.2,
-  straightYawDamping: 10,
-  normalLateralDamping: 3,
-  driftLateralDamping: 1.8,
-  decayLateralDamping: 3.5,
+  yawInertiaPerMass: 0.87,
+  yawDamping: 0.35,
+  straightYawDamping: 6,
   cornerDrawFactor: 0.18,
   driftTrigTime: 0.2,
   driftDecayTime: 0.4,
   driftSlipFactor: 0.2,
-  driftTriggerFrontGrip: 0.45,
-  driftEntryYaw: 0.25,
+  driftTriggerFactor: 0.2,
+  driftEscapeForce: 2600,
+  tireResponseTime: 0.16,
   driftStopSpeed: 5,
   driftMaxGauge: 4300,
   driftGaugeScale: 3.7,
@@ -143,8 +142,12 @@ export const DEFAULT_TUNING: VehicleTuning = {
   // 0.5 s follows the existing kart.html prototype and is an approximation.
   startBoostDuration: 0.5,
   startBoostWindow: 0.1,
-  wallRestitution: 0.25,
-  vehicleHalfWidth: 0.6,
+  wallRestitution: 0.5,
+  // Cotton1 ReKart.rootBounds, with the model's -Y axis pointing forward.
+  vehicleHalfWidth: 0.80756,
+  vehicleHalfLength: 0.85441,
+  collisionCenterForward: 0.05448,
+  driftGaugePreserveOnImpact: 0.5,
 };
 
 export interface RoadSurface {
@@ -194,7 +197,7 @@ export interface RouteSample {
 
 export interface RouteSampler {
   readonly length: number;
-  nearest(x: number, z: number, hint?: number): RouteSample;
+  nearest(x: number, z: number, hint?: number, heightHint?: number): RouteSample;
 }
 
 interface RouteSegment {
@@ -339,8 +342,14 @@ export interface VehicleOptions {
   /** Road surface query, called once per 2 ms substep. */
   surfaceAt?: SurfaceSampler | null;
   /** Optional ground height. Wins over route height. */
-  groundHeightAt?: ((x: number, z: number, progress: number) => number) | null;
-  /** Constant or callback half-width. Wall collision needs a route sampler. */
+  groundHeightAt?: ((
+    x: number, z: number, progress: number, previousHeight: number,
+  ) => number | null) | null;
+  /** Deepest overlapping track wall, sampled at the kart's footprint centre. */
+  wallContactAt?: ((
+    x: number, y: number, z: number, yaw: number, halfWidth: number, halfLength: number,
+  ) => TrackWallContact | null) | null;
+  /** Constant or callback half-width for courses without collision geometry. */
   roadHalfWidth?: number | RoadHalfWidthSampler | null;
   /** Follow the attached route's interpolated Y. Default true. */
   followRouteHeight?: boolean;
@@ -371,7 +380,7 @@ export class KartVehicle {
   private forwardSpeed: number;
   private lateralVelocity: number;
   private yawRate: number;
-  private steerSmoothed: number;
+  private tireEnvelope = 0;
   private driftPhaseValue: DriftPhase;
   private driftDirection: number;
   private driftTimer: number;
@@ -392,9 +401,8 @@ export class KartVehicle {
   private elapsedSeconds: number;
   private routeValue: RouteSampler | null;
   private surfaceSampler: SurfaceSampler | null;
-  private groundHeightSampler:
-    | ((x: number, z: number, progress: number) => number)
-    | null;
+  private groundHeightSampler: NonNullable<VehicleOptions["groundHeightAt"]> | null;
+  private readonly wallContactAt: NonNullable<VehicleOptions["wallContactAt"]> | null;
   private halfWidthSampler: RoadHalfWidthSampler | null;
   private followRouteHeightValue: boolean;
   private routeSample: RouteSample | null;
@@ -413,7 +421,6 @@ export class KartVehicle {
     this.forwardSpeed = finiteOr(options.speed, 0);
     this.lateralVelocity = 0;
     this.yawRate = 0;
-    this.steerSmoothed = 0;
     this.driftPhaseValue = "none";
     this.driftDirection = 0;
     this.driftTimer = 0;
@@ -441,6 +448,7 @@ export class KartVehicle {
     this.routeValue = options.route ?? null;
     this.surfaceSampler = options.surfaceAt ?? null;
     this.groundHeightSampler = options.groundHeightAt ?? null;
+    this.wallContactAt = options.wallContactAt ?? null;
     this.halfWidthSampler =
       typeof options.roadHalfWidth === "function"
         ? options.roadHalfWidth
@@ -506,16 +514,15 @@ export class KartVehicle {
   }
 
   /** Respawn on the course without resetting race timing or collected gauge. */
-  resetPose(x: number, y: number, z: number, yaw: number): void {
+  resetPose(x: number, y: number, z: number, yaw: number, speed = 0): void {
     this.finishDrift();
     this.x = x;
     this.y = y;
     this.z = z;
     this.yawValue = wrapAngle(yaw);
-    this.forwardSpeed = 0;
+    this.forwardSpeed = finiteOr(speed, 0);
     this.lateralVelocity = 0;
     this.yawRate = 0;
-    this.steerSmoothed = 0;
     this.accumulatorSeconds = 0;
     this.routeSample = null;
     this.previousRouteProgress = this.routeProgress;
@@ -623,15 +630,11 @@ export class KartVehicle {
     }
 
     this.updateDriftState(
-      driftHeld,
+      driftChord,
       driftEdge,
       steerTarget,
       partialStep,
     );
-
-    this.steerSmoothed +=
-      (steerTarget - this.steerSmoothed) *
-      (1 - Math.exp(-this.configuration.steeringResponse * partialStep));
 
     const boostActive = this.boostRemainingValue > 0;
     const boostMultiplier = boostActive
@@ -640,136 +643,77 @@ export class KartVehicle {
         : this.configuration.boostAccelFactor
       : 1;
 
-    let longitudinalAcceleration = 0;
-    if (throttle > 0) {
-      longitudinalAcceleration +=
-        (this.configuration.forwardAccel *
-          throttle *
-          boostMultiplier *
-          accelerationMultiplier) /
-        this.configuration.mass;
-    }
-    if (brake > 0) {
-      const brakingForce =
-        this.forwardSpeed > 0.5
-          ? this.configuration.gripBrake
-          : this.configuration.backwardAccel;
-      longitudinalAcceleration -= (brakingForce * brake) / this.configuration.mass;
-    }
+    const spec = this.configuration;
+    const speed = Math.hypot(this.forwardSpeed, this.lateralVelocity);
+    const forwardMagnitude = Math.abs(this.forwardSpeed);
+    const tireSpeed = Math.max(speed, 1);
+    const lateralRatio = this.lateralVelocity / tireSpeed;
+    const axleRatio = this.yawRate * spec.halfWheelbase / tireSpeed;
+    const steerAngle = steerTarget * spec.maxSteerDeg * Math.PI / 180 *
+      Math.exp(-forwardMagnitude / spec.steerConstraint * spec.steeringExponentialScale);
+    const travelDirection = this.forwardSpeed < 0 ? -1 : 1;
+    const tireForce = spec.tireStiffness * spec.tireGrip * gripMultiplier * Math.min(speed, 1);
+    const trigger = this.driftPhaseValue === "trigger";
+    const active = this.driftPhaseValue === "active";
+    const sliding = speed > 15 && Math.abs(this.lateralVelocity) > 1.2 * forwardMagnitude;
 
-    const dragForce =
-      this.forwardSpeed * this.configuration.airFriction +
-      this.forwardSpeed *
-        Math.abs(this.forwardSpeed) *
-        this.configuration.dragFactor *
-        dragMultiplier;
-    longitudinalAcceleration -= dragForce / this.configuration.mass;
-    this.forwardSpeed += longitudinalAcceleration * partialStep;
-
-    if (
-      throttle <= 0.01 &&
-      brake <= 0.01 &&
-      Math.abs(this.forwardSpeed) < 0.15
-    ) {
-      this.forwardSpeed = 0;
-    }
-
-    const speedMagnitude = Math.abs(this.forwardSpeed);
-    const travelSign = this.forwardSpeed < 0 ? -1 : 1;
-    const maxSteeringAngle = this.configuration.maxSteerDeg * Math.PI / 180;
-    const steeringAngle =
-      this.steerSmoothed *
-      maxSteeringAngle *
-      Math.exp(
-        (-speedMagnitude / this.configuration.steerConstraint) *
-          this.configuration.steeringExponentialScale,
-      ) *
-      travelSign;
-
-    const speedReference = Math.max(speedMagnitude, 2);
-    const axleSpeed = this.yawRate * this.configuration.halfWheelbase;
-    let frontSlip = steeringAngle -
-      Math.atan2(this.lateralVelocity + axleSpeed, speedReference);
-    let rearSlip = -Math.atan2(this.lateralVelocity - axleSpeed, speedReference);
-
-    let frontGrip = 1;
-    let rearGrip = 1;
-    if (this.driftPhaseValue === "trigger") {
-      frontSlip = this.driftDirection * maxSteeringAngle;
-      frontGrip = this.configuration.driftTriggerFrontGrip;
-      rearGrip = 0;
-    } else if (this.driftPhaseValue === "active") {
-      frontGrip = this.configuration.driftSlipFactor;
-      rearGrip = frontGrip;
-    } else if (this.driftPhaseValue === "decay") {
-      const recovery = clamp(
-        1 - this.driftTimer / this.configuration.driftDecayTime,
-        0,
-        1,
-      );
-      frontGrip = this.configuration.driftSlipFactor +
-        (1 - this.configuration.driftSlipFactor) * recovery;
-      rearGrip = frontGrip;
+    // The tires can have regained their grip while the kart is still moving sideways.
+    const recovery = this.driftPhaseValue === "decay"
+      ? 1 - Math.exp((this.driftTimer - spec.driftDecayTime) / spec.tireResponseTime)
+      : 1;
+    let frontForce: number;
+    let rearForce: number;
+    if (trigger) {
+      // Only the front axle generates lateral force during ignition.
+      frontForce = tireForce * spec.driftTriggerFactor * this.driftDirection;
+      rearForce = 0;
     } else {
-      const slipLimit = this.configuration.tireSlipLimitRad;
-      frontSlip = clamp(frontSlip, -slipLimit, slipLimit);
-      rearSlip = clamp(rearSlip, -slipLimit, slipLimit);
+      let axleGrip = 1;
+      if (active) {
+        this.tireEnvelope += (1 - this.tireEnvelope) *
+          (1 - Math.exp(-partialStep / spec.tireResponseTime));
+        axleGrip = spec.driftSlipFactor * this.tireEnvelope;
+      } else if (this.driftPhaseValue === "decay") {
+        const releasedGrip = this.tireEnvelope * spec.driftSlipFactor;
+        axleGrip = releasedGrip + (1 - releasedGrip) * recovery;
+      }
+      frontForce = tireForce * axleGrip * (steerAngle * travelDirection - lateralRatio - axleRatio);
+      rearForce = tireForce * axleGrip * (-lateralRatio + axleRatio);
+      if (active && sliding) {
+        // Progressive rear bite keeps a sustained handbrake turn recoverable
+        // at the reference's 1.2 lateral/forward breakaway threshold.
+        const excessSlip = Math.max(0, (Math.abs(this.lateralVelocity) - 1.2 * forwardMagnitude) / tireSpeed);
+        rearForce -= tireForce * excessSlip * lateralRatio;
+      }
     }
-    frontGrip *= gripMultiplier;
-    rearGrip *= gripMultiplier;
 
-    const tireSpeedScale = clamp(speedMagnitude / 2, 0, 1);
-    const frontForce =
-      this.configuration.tireStiffness *
-      this.configuration.tireGrip *
-      frontGrip *
-      frontSlip *
-      tireSpeedScale;
-    const rearForce =
-      this.configuration.tireStiffness *
-      this.configuration.tireGrip *
-      rearGrip *
-      rearSlip *
-      tireSpeedScale;
-
-    this.lateralVelocity +=
-      ((frontForce + rearForce) / this.configuration.mass) * partialStep;
-    this.yawRate +=
-      ((this.configuration.halfWheelbase * (frontForce - rearForce)) /
-        (this.configuration.mass / this.configuration.yawInertiaDiv)) *
-      partialStep;
-
-    this.yawRate *= Math.exp(
-      -this.configuration.yawDamping * partialStep,
-    );
-    if (Math.abs(this.steerSmoothed) < 0.05) {
-      this.yawRate *= Math.exp(
-        -this.configuration.straightYawDamping * partialStep,
-      );
+    const driveForce = sliding ? spec.driftEscapeForce : spec.forwardAccel;
+    let forwardForce = driveForce * spec.driveScale * throttle * boostMultiplier * accelerationMultiplier;
+    if (brake > 0) {
+      forwardForce -= (this.forwardSpeed > 0.5 ? spec.gripBrake : spec.backwardAccel) * brake;
     }
-    const yawRateLimit = this.driftPhaseValue === "none"
-      ? this.configuration.yawRateLimit
-      : this.configuration.driftYawRateLimit;
-    this.yawRate = clamp(
-      this.yawRate,
-      -yawRateLimit,
-      yawRateLimit,
-    );
-
-    const lateralDamping =
-      this.driftPhaseValue === "none"
-        ? this.configuration.normalLateralDamping
-        : this.driftPhaseValue === "decay"
-          ? this.configuration.decayLateralDamping
-          : this.configuration.driftLateralDamping;
-    this.lateralVelocity *= Math.exp(-lateralDamping * gripMultiplier * partialStep);
-
-    if (this.forwardSpeed !== 0) {
-      this.forwardSpeed -=
-        Math.sign(this.forwardSpeed) *
-        this.configuration.cornerDrawFactor *
-        (Math.abs(frontForce + rearForce) / this.configuration.mass) *
-        partialStep;
+    // Drag uses the world velocity magnitude and acts along both components.
+    const drag = spec.airFriction + speed * spec.dragFactor * dragMultiplier;
+    const sideForce = frontForce + rearForce;
+    if (!trigger && !active) {
+      forwardForce -= travelDirection * spec.cornerDrawFactor * Math.abs(sideForce) * recovery;
+    }
+    this.forwardSpeed += (forwardForce - this.forwardSpeed * drag) / spec.mass * partialStep;
+    this.lateralVelocity += (sideForce - this.lateralVelocity * drag) / spec.mass * partialStep;
+    const yawInertia = spec.mass * spec.yawInertiaPerMass;
+    const yawTorque = spec.halfWheelbase * (frontForce - rearForce) - spec.airFriction * this.yawRate;
+    this.yawRate += yawTorque / yawInertia * partialStep;
+    if (this.driftPhaseValue === "none") {
+      // Flat-ground self-alignment after the slip window closes. Centered
+      // wheels settle promptly when the driver lets go of the direction key.
+      const damping = spec.straightYawDamping +
+        (spec.yawDamping - spec.straightYawDamping) * Math.abs(steerTarget);
+      this.yawRate *= Math.exp(-damping * gripMultiplier * partialStep);
+    }
+    if (speed < 0.15 && throttle === 0 && brake === 0) {
+      this.forwardSpeed = 0;
+      this.lateralVelocity = 0;
+      this.yawRate = 0;
     }
 
     const yawDelta = this.yawRate * partialStep;
@@ -807,7 +751,7 @@ export class KartVehicle {
       );
     }
 
-    this.updateRoute();
+    this.updateRoute(steerTarget);
 
     if (this.boostRemainingValue > 0) {
       this.boostRemainingValue = Math.max(
@@ -831,50 +775,32 @@ export class KartVehicle {
     steerTarget: number,
     deltaSeconds: number,
   ): void {
-    if (
-      driftEdge &&
-      this.driftPhaseValue === "none" &&
-      this.forwardSpeed >= this.configuration.driftStopSpeed
-    ) {
-      this.driftPhaseValue = "trigger";
-      this.driftDirection = steerTarget > 0 ? 1 : -1;
-      this.driftTimer = this.configuration.driftTrigTime;
-      this.driftGaugeElapsed = 0;
-      this.yawRate +=
-        this.driftDirection * this.configuration.driftEntryYaw;
+    if (this.driftPhaseValue !== "none" && this.forwardSpeed < this.configuration.driftStopSpeed) {
+      this.finishDrift();
     }
-
+    if (driftEdge && this.forwardSpeed >= this.configuration.driftStopSpeed &&
+      (this.driftPhaseValue === "none" || (this.driftPhaseValue === "decay" && this.driftTimer <= 0))) {
+      this.finishDrift();
+      this.driftPhaseValue = "trigger";
+      this.driftDirection = Math.sign(steerTarget);
+      this.driftTimer = this.configuration.driftTrigTime;
+      this.tireEnvelope = 0;
+    }
+    const holdingDirection = driftHeld && steerTarget * this.driftDirection > 0;
     if (this.driftPhaseValue === "trigger") {
       this.driftTimer -= deltaSeconds;
       if (this.driftTimer <= 0) {
-        this.driftPhaseValue = driftHeld ? "active" : "decay";
-        this.driftTimer =
-          this.driftPhaseValue === "decay"
-            ? this.configuration.driftDecayTime
-            : 0;
-        this.driftGaugeElapsed = 0;
+        this.driftPhaseValue = holdingDirection ? "active" : "decay";
+        this.driftTimer = holdingDirection ? 0 : this.configuration.driftDecayTime;
       }
-      return;
-    }
-
-    if (this.driftPhaseValue === "active") {
-      if (!driftHeld || steerTarget * this.driftDirection < -0.05) {
-        this.driftPhaseValue = "decay";
-        this.driftTimer = this.configuration.driftDecayTime;
-      } else if (
-        Math.abs(this.forwardSpeed) < this.configuration.driftStopSpeed
-      ) {
-        this.finishDrift();
-      }
-      return;
-    }
-
-    if (this.driftPhaseValue === "decay") {
+    } else if (this.driftPhaseValue === "active" && !holdingDirection) {
+      this.driftPhaseValue = "decay";
+      this.driftTimer = this.configuration.driftDecayTime;
+    } else if (this.driftPhaseValue === "decay") {
       this.driftTimer -= deltaSeconds;
-      if (
-        this.driftTimer <= 0 ||
-        Math.abs(this.forwardSpeed) < this.configuration.driftStopSpeed
-      ) {
+      // The tires regrip first, then the visible skid and gauge window end
+      // as the velocity catches the chassis or crosses its original heading.
+      if (this.driftTimer <= 0 && -this.lateralVelocity * this.driftDirection <= 0.12 * this.forwardSpeed) {
         this.finishDrift();
       }
     }
@@ -914,12 +840,27 @@ export class KartVehicle {
     );
   }
 
-  private updateRoute(): void {
+  private updateRoute(steer: number): void {
+    if (this.wallContactAt) {
+      const { vehicleHalfWidth, vehicleHalfLength, collisionCenterForward } = this.configuration;
+      const offsetX = Math.sin(this.yawValue) * collisionCenterForward;
+      const offsetZ = Math.cos(this.yawValue) * collisionCenterForward;
+      // A second face can still overlap after clearing the first at a corner.
+      for (let pass = 0; pass < 3; pass++) {
+        const contact = this.wallContactAt(
+          this.x + offsetX, this.y, this.z + offsetZ, this.yawValue, vehicleHalfWidth, vehicleHalfLength,
+        );
+        if (!contact || !(contact.depth > 0)) break;
+        this.resolveWallContact(contact, steer);
+      }
+    }
+
     if (this.routeValue !== null) {
       const sample = this.routeValue.nearest(
         this.x,
         this.z,
         this.routeSample?.segment,
+        this.y,
       );
       this.routeSample = sample;
       this.routeProgress = sample.progress;
@@ -943,73 +884,72 @@ export class KartVehicle {
       }
       this.previousRouteProgress = sample.progress;
 
-      if (this.halfWidthSampler !== null) {
+      if (this.wallContactAt === null && this.halfWidthSampler !== null) {
         const halfWidth = this.halfWidthSampler(
           sample.progress,
           this.x,
           this.z,
           sample,
         );
-        this.resolveWall(sample, halfWidth);
+        const limit = Math.max(0, halfWidth - this.configuration.vehicleHalfWidth);
+        const depth = Math.abs(sample.lateral) - limit;
+        if (Number.isFinite(depth) && depth > 0) {
+          const side = Math.sign(sample.lateral);
+          this.resolveWallContact({
+            normalX: -side * sample.rightX,
+            normalZ: -side * sample.rightZ,
+            depth,
+          }, steer);
+          this.lateralOffsetValue = side * limit;
+        }
       }
-
-      if (this.groundHeightSampler !== null) {
-        const height = this.groundHeightSampler(
-          this.x,
-          this.z,
-          sample.progress,
-        );
-        if (Number.isFinite(height)) this.y = height;
-      } else if (this.followRouteHeightValue) {
-        this.y = sample.y;
-      }
-    } else if (this.groundHeightSampler !== null) {
-      const height = this.groundHeightSampler(this.x, this.z, 0);
-      if (Number.isFinite(height)) this.y = height;
+    }
+    const height = this.groundHeightSampler?.(this.x, this.z, this.routeProgress, this.y);
+    if (typeof height === "number" && Number.isFinite(height)) {
+      this.y = height;
+    } else if (this.routeSample && this.followRouteHeightValue) {
+      this.y = this.routeSample.y;
     }
   }
 
-  private resolveWall(sample: RouteSample, halfWidth: number): void {
-    if (!Number.isFinite(halfWidth)) return;
-    const limit = Math.max(
-      0,
-      halfWidth - this.configuration.vehicleHalfWidth,
-    );
-    const lateral = sample.lateral;
-    if (Math.abs(lateral) <= limit) {
-      this.lateralOffsetValue = lateral;
-      return;
-    }
+  private resolveWallContact({ normalX, normalZ, depth }: TrackWallContact, steer: number): void {
+    this.x += normalX * depth;
+    this.z += normalZ * depth;
 
-    const side = lateral >= 0 ? 1 : -1;
-    this.x = sample.x + sample.rightX * limit * side;
-    this.z = sample.z + sample.rightZ * limit * side;
-    this.lateralOffsetValue = limit * side;
-
-    const normalX = sample.rightX * side;
-    const normalZ = sample.rightZ * side;
     const forwardX = Math.sin(this.yawValue);
     const forwardZ = Math.cos(this.yawValue);
-    const rightX = Math.cos(this.yawValue);
-    const rightZ = -Math.sin(this.yawValue);
+    const normalForward = normalX * forwardX + normalZ * forwardZ;
+    const normalRight = normalX * forwardZ - normalZ * forwardX;
+    const closingSpeed = -(this.forwardSpeed * normalForward + this.lateralVelocity * normalRight);
+    if (closingSpeed <= 0) return;
 
-    let velocityX =
-      forwardX * this.forwardSpeed + rightX * this.lateralVelocity;
-    let velocityZ =
-      forwardZ * this.forwardSpeed + rightZ * this.lateralVelocity;
-    const normalVelocity = velocityX * normalX + velocityZ * normalZ;
-    if (normalVelocity > 2.5 && this.elapsedSeconds - this.lastImpact > 0.45) {
+    if (closingSpeed > 2.5 && this.elapsedSeconds - this.lastImpact > 0.45) {
       this.collisionCount++;
       this.lastImpact = this.elapsedSeconds;
+      this.pendingGauge *= this.configuration.driftGaugePreserveOnImpact;
     }
-    if (normalVelocity > 0) {
-      const restitution = this.configuration.wallRestitution;
-      velocityX -= normalX * normalVelocity * (1 + restitution);
-      velocityZ -= normalZ * normalVelocity * (1 + restitution);
-    }
+    // A resting contact removes only the inward speed. A real impact rebounds;
+    // the component along the face is preserved in either case.
+    const restitution = closingSpeed > 1 ? this.configuration.wallRestitution : 0;
+    const impulse = closingSpeed * (1 + restitution);
+    this.forwardSpeed += impulse * normalForward;
+    this.lateralVelocity += impulse * normalRight;
 
-    this.forwardSpeed = velocityX * forwardX + velocityZ * forwardZ;
-    this.lateralVelocity = velocityX * rightX + velocityZ * rightZ;
-    this.yawRate *= 0.5;
+    if (normalForward < 0) {
+      // With the nose pinned the tires have little steering authority. Allow
+      // steering to pick a side head-on; an oblique nose hit turns along the face.
+      const pinningNose = normalForward < -0.45 && Math.hypot(this.forwardSpeed, this.lateralVelocity) < 3;
+      if (steer !== 0 && pinningNose) {
+        const direction = Math.sign(steer);
+        const turnRate = Math.abs(steer) * (1.8 - 0.7 * normalForward);
+        this.yawRate = direction * Math.max(this.yawRate * direction, turnRate);
+        return;
+      }
+      const turn = Math.abs(normalRight) < 0.02 || (-normalForward > 0.8 && steer !== 0)
+        ? steer
+        : Math.sign(normalRight);
+      const yawImpulse = Math.min(1, closingSpeed) * -normalForward;
+      this.yawRate += turn * yawImpulse * 0.45;
+    }
   }
 }

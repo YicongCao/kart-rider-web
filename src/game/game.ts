@@ -1,5 +1,5 @@
 import { MathUtils, Vector3 } from "three";
-import type { RacePhase, TrackInfo, TrackRecord } from "../types";
+import type { RacePhase, TrackInfo, TrackRecord, Vec3 } from "../types";
 import { AudioManager } from "./audio";
 import { InputController } from "./input";
 import { KartView } from "./kart-view";
@@ -51,6 +51,10 @@ function normalizeAngle(value: number) {
   return angle;
 }
 
+function groundSpeed(state: VehicleState) {
+  return Math.hypot(state.speed, state.lateralSpeed);
+}
+
 export class Game {
   private canvas: HTMLCanvasElement;
   private menuRoot: HTMLElement;
@@ -77,6 +81,8 @@ export class Game {
   private currentLap = 0;
   private previousProgress = 0;
   private routeHint = -1;
+  private lastRacePosition: Vec3 = [0, 0, 0];
+  private offCourseSeconds = 0;
   private progressInitialized = false;
   private lapArmed = false;
   private bestLap = Number.POSITIVE_INFINITY;
@@ -199,7 +205,7 @@ export class Game {
       const state = this.vehicle.state;
       this.audio.update(
         rawDelta,
-        state.speed,
+        groundSpeed(state),
         this.input.snapshot().throttle,
         state.drifting,
         state.boosting,
@@ -297,24 +303,24 @@ export class Game {
   }
 
   private resetRaceState(track: TrackInfo) {
-    const route = this.world.route;
-    if (!route) {
+    const { route, collision } = this.world;
+    if (!route || !collision) {
       return;
     }
     const start = route.points[0];
     const yaw = Math.atan2(start.f[0], start.f[2]);
     const localSampler = {
       length: route.length,
-      nearest: (x: number, z: number, hint = -1) => {
-        const sample = route.query(x, z, hint);
+      nearest: (x: number, z: number, hint = -1, height?: number) => {
+        const sample = route.query(x, z, hint, height);
         return {
           x: sample.x,
           y: sample.y,
           z: sample.z,
           tangentX: sample.forward[0],
           tangentZ: sample.forward[2],
-          rightX: -sample.forward[2],
-          rightZ: sample.forward[0],
+          rightX: sample.right[0],
+          rightZ: sample.right[2],
           progress: sample.s,
           lateral: sample.lateral,
           segment: sample.index,
@@ -339,7 +345,8 @@ export class Game {
       speed: 0,
       startAtSeconds: 0,
       route: localSampler,
-      roadHalfWidth: Math.max(4, route.halfWidth - 0.45),
+      wallContactAt: collision.queryWall.bind(collision),
+      groundHeightAt: (x, z, _progress, height) => collision.groundHeight(x, height, z),
       surfaceAt,
       followRouteHeight: true,
     });
@@ -363,6 +370,8 @@ export class Game {
     const sample = route.query(start.p[0], start.p[2]);
     this.previousProgress = 0;
     this.routeHint = 0;
+    this.lastRacePosition = [...start.p];
+    this.offCourseSeconds = 0;
     this.progressInitialized = true;
     this.lapArmed = false;
     this.kartView.update(this.vehicle.state, 0.016, sample);
@@ -398,15 +407,34 @@ export class Game {
   }
 
   private updateRace(state: VehicleState, delta: number) {
-    if (!this.currentTrack) {
+    if (!this.currentTrack || !this.vehicle) {
       return;
     }
     const route = this.world.route;
     if (!route) {
       return;
     }
-    const sample = route.query(state.x, state.z, this.routeHint);
+    const position: Vec3 = [state.x, state.y, state.z];
+    const warp = route.data.warp;
+    if (warp && route.crossesWarp(this.lastRacePosition, position)) {
+      this.vehicle.resetPose(...warp.to, warp.yaw, groundSpeed(state));
+      state = this.vehicle.state;
+      this.routeHint = route.warpIndex + 1;
+      this.cameraYaw = warp.yaw;
+      this.kartView.resetTrail();
+    }
+    this.lastRacePosition = [state.x, state.y, state.z];
+    const sample = route.query(state.x, state.z, this.routeHint, state.y);
     this.routeHint = sample.index;
+    // Allow jumps and mesh seams. Recover only after staying beyond the course
+    // with no drivable surface under the kart.
+    const outside = Math.hypot(state.x - sample.x, state.z - sample.z) > route.halfWidth + 2;
+    this.offCourseSeconds = outside && this.world.collision?.groundHeight(state.x, state.y, state.z) === null
+      ? this.offCourseSeconds + delta : 0;
+    if (this.offCourseSeconds > 1) {
+      this.resetVehicle();
+      return;
+    }
     this.routeForward = sample.forward;
     this.kartView.update(state, delta, sample, this.input.snapshot().steer);
     this.updateChaseCamera(delta, state);
@@ -418,7 +446,7 @@ export class Game {
 
     const timeMs = state.time * 1000;
     this.hud.setTime(timeMs);
-    this.hud.setSpeed(Math.abs(state.speed) * 3.6);
+    this.hud.setSpeed(groundSpeed(state) * 3.6);
     this.hud.setGauge(state.gauge, state.gauge >= 0.999);
     this.hud.setDrift(state.drifting, state.gauge);
     this.hud.setBoost(state.boosting);
@@ -520,7 +548,7 @@ export class Game {
   }
 
   private updateChaseCamera(delta: number, state: VehicleState, snap = false) {
-    const speed = Math.abs(state.speed);
+    const speed = groundSpeed(state);
     const slip = Math.atan2(state.lateralSpeed, Math.max(state.speed, 1));
     const travelYaw = state.yaw + MathUtils.clamp(slip, -0.9, 0.9) * MathUtils.smoothstep(state.speed, 1, 6);
     const yawError = normalizeAngle(travelYaw - this.cameraYaw);
@@ -664,9 +692,11 @@ export class Game {
       return;
     }
     const state = this.vehicle.state;
-    const sample = route.query(state.x, state.z);
+    const sample = route.query(state.x, state.z, this.routeHint, state.y);
     const yaw = Math.atan2(sample.forward[0], sample.forward[2]);
     this.vehicle.resetPose(sample.x, sample.y, sample.z, yaw);
+    this.lastRacePosition = [sample.x, sample.y, sample.z];
+    this.offCourseSeconds = 0;
     this.cameraYaw = yaw;
     this.previousProgress = sample.s;
     this.routeHint = sample.index;
@@ -739,23 +769,26 @@ export class Game {
 
   private exposeDebugApi() {
     const api = {
-      snapshot: (): DebugSnapshot => ({
-        phase: this.phase,
-        track: this.currentTrack?.id ?? null,
-        time: this.vehicle?.state.time ?? 0,
-        lap: this.currentLap,
-        speedKmh: Math.abs(this.vehicle?.state.speed ?? 0) * 3.6,
-        gauge: this.vehicle?.state.gauge ?? 0,
-        drifting: this.vehicle?.state.drifting ?? false,
-        boosting: this.vehicle?.state.boosting ?? false,
-        x: this.vehicle?.state.x ?? 0,
-        y: this.vehicle?.state.y ?? 0,
-        z: this.vehicle?.state.z ?? 0,
-        yaw: this.vehicle?.state.yaw ?? 0,
-        lateralSpeed: this.vehicle?.state.lateralSpeed ?? 0,
-        lapProgress: this.vehicle?.state.lapProgress ?? 0,
-        driftPhase: this.vehicle?.state.driftPhase ?? "none",
-      }),
+      snapshot: (): DebugSnapshot => {
+        const state = this.vehicle?.state;
+        return {
+          phase: this.phase,
+          track: this.currentTrack?.id ?? null,
+          time: state?.time ?? 0,
+          lap: this.currentLap,
+          speedKmh: state ? groundSpeed(state) * 3.6 : 0,
+          gauge: state?.gauge ?? 0,
+          drifting: state?.drifting ?? false,
+          boosting: state?.boosting ?? false,
+          x: state?.x ?? 0,
+          y: state?.y ?? 0,
+          z: state?.z ?? 0,
+          yaw: state?.yaw ?? 0,
+          lateralSpeed: state?.lateralSpeed ?? 0,
+          lapProgress: state?.lapProgress ?? 0,
+          driftPhase: state?.driftPhase ?? "none",
+        };
+      },
       startTrack: (id: string) => this.startRace(id),
       quit: () => this.quitToMenu(),
       tracks: () => this.tracks.map((track) => track.id),

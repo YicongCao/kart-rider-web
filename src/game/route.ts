@@ -29,6 +29,8 @@ export class Route {
   readonly points: RouteData["points"];
   readonly length: number;
   readonly halfWidth: number;
+  /** Last road sample before a discontinuous transfer to the next sample. */
+  readonly warpIndex: number;
 
   constructor(data: RouteData, grid?: Vec3) {
     this.length = data.length;
@@ -55,39 +57,54 @@ export class Route {
       }));
     }
     this.data = { ...data, points: this.points };
+    const departure = data.warp?.from;
+    this.warpIndex = departure
+      ? this.points.findIndex(({ p }) => p.every((v, i) => Math.abs(v - departure[i]) < 0.01))
+      : -1;
   }
 
   pointAt(index: number) {
     return this.points[wrapIndex(index, this.points.length)];
   }
 
-  query(x: number, z: number, hint = -1): RouteSample {
+  /** Test the swept kart position against the finite warpnext gate, in race direction. */
+  crossesWarp(previous: Vec3, current: Vec3) {
+    const warp = this.data.warp;
+    if (!warp || this.warpIndex < 0) return false;
+    const [a, b, top] = warp.gate;
+    const dx = b[0] - a[0];
+    const dz = b[2] - a[2];
+    const forward = this.points[this.warpIndex].f;
+    const sign = Math.sign(dz * forward[0] - dx * forward[2]);
+    const distance = (p: Vec3) => sign * ((p[0] - a[0]) * dz - (p[2] - a[2]) * dx);
+    const before = distance(previous);
+    const after = distance(current);
+    if (before > 0 || after <= 0) return false;
+    const t = before / (before - after);
+    const x = lerp(previous[0], current[0], t) - a[0];
+    const z = lerp(previous[2], current[2], t) - a[2];
+    const u = (x * dx + z * dz) / (dx * dx + dz * dz);
+    const y = lerp(previous[1], current[1], t);
+    return u >= 0 && u <= 1 && y >= Math.min(a[1], b[1]) - 1 && y <= top[1];
+  }
+
+  query(x: number, z: number, hint = -1, height?: number): RouteSample {
     const count = this.points.length;
     let bestIndex = 0;
     let bestDistance = Number.POSITIVE_INFINITY;
 
-    if (hint >= 0) {
-      for (let offset = -48; offset <= 48; offset += 1) {
-        const index = wrapIndex(hint + offset, count);
-        const point = this.points[index].p;
-        const dx = x - point[0];
-        const dz = z - point[2];
-        const distance = dx * dx + dz * dz;
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = index;
-        }
-      }
-    } else {
-      for (let index = 0; index < count; index += 1) {
-        const point = this.points[index].p;
-        const dx = x - point[0];
-        const dz = z - point[2];
-        const distance = dx * dx + dz * dz;
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = index;
-        }
+    const first = hint >= 0 ? hint - 48 : 0;
+    const last = hint >= 0 ? hint + 48 : count - 1;
+    for (let i = first; i <= last; i++) {
+      const index = wrapIndex(i, count);
+      const point = this.points[index].p;
+      const dx = x - point[0];
+      const dz = z - point[2];
+      const dy = height === undefined ? 0 : height - point[1];
+      const distance = dx * dx + dy * dy + dz * dz;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
       }
     }
 
@@ -96,19 +113,23 @@ export class Route {
     let bestT = 0;
 
     for (const startIndex of [bestIndex, wrapIndex(bestIndex - 1, count)]) {
+      if (startIndex === this.warpIndex) continue;
       const endIndex = wrapIndex(startIndex + 1, count);
       const start = this.points[startIndex].p;
       const end = this.points[endIndex].p;
       const segmentX = end[0] - start[0];
+      const segmentY = height === undefined ? 0 : end[1] - start[1];
       const segmentZ = end[2] - start[2];
-      const segmentLengthSq = segmentX * segmentX + segmentZ * segmentZ;
+      const segmentLengthSq = segmentX * segmentX + segmentY * segmentY + segmentZ * segmentZ;
+      const dy = height === undefined ? 0 : height - start[1];
+      const along = (x - start[0]) * segmentX + dy * segmentY + (z - start[2]) * segmentZ;
       const t =
         segmentLengthSq > 1e-9
-          ? Math.max(0, Math.min(1, ((x - start[0]) * segmentX + (z - start[2]) * segmentZ) / segmentLengthSq))
+          ? Math.max(0, Math.min(1, along / segmentLengthSq))
           : 0;
       const pointX = start[0] + segmentX * t;
       const pointZ = start[2] + segmentZ * t;
-      const distance = (x - pointX) ** 2 + (z - pointZ) ** 2;
+      const distance = (x - pointX) ** 2 + (dy - segmentY * t) ** 2 + (z - pointZ) ** 2;
       if (distance < bestSegmentDistance) {
         bestSegmentDistance = distance;
         bestSegment = startIndex;

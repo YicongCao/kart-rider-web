@@ -23,6 +23,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { RouteData, TrackInfo } from "../types";
 import { Route } from "./route";
+import { TrackCollision } from "./track-collision";
 
 export interface MinimapProjection {
   centerX: number;
@@ -35,6 +36,7 @@ export interface MinimapProjection {
 
 export interface TrackLoadResult {
   route: Route;
+  collision: TrackCollision;
   minimap: MinimapProjection;
 }
 
@@ -102,6 +104,7 @@ export class RaceWorld {
   readonly weatherRoot = new Group();
 
   route: Route | null = null;
+  collision: TrackCollision | null = null;
   minimap: MinimapProjection | null = null;
   track: TrackInfo | null = null;
 
@@ -172,7 +175,8 @@ export class RaceWorld {
     }
     const routeData = (await routeResponse.json()) as RouteData;
     this.route = new Route(routeData, track.start);
-    this.minimap = this.buildMinimapProjection(this.route.data);
+    this.collision = new TrackCollision(trackGltf, track.id);
+    this.minimap = this.buildMinimapProjection(this.route);
 
     reported = Math.max(reported, 0.94);
     onProgress(reported, "准备起跑");
@@ -182,7 +186,7 @@ export class RaceWorld {
     this.buildWeather(track.theme);
     onProgress(1, "准备起跑");
 
-    return { route: this.route, minimap: this.minimap };
+    return { route: this.route, collision: this.collision, minimap: this.minimap };
   }
 
   update(delta: number) {
@@ -432,7 +436,7 @@ export class RaceWorld {
     this.weatherCue = null;
   }
 
-  private buildMinimapProjection(route: RouteData): MinimapProjection {
+  private buildMinimapProjection(route: Route): MinimapProjection {
     let minX = Number.POSITIVE_INFINITY;
     let maxX = Number.NEGATIVE_INFINITY;
     let minZ = Number.POSITIVE_INFINITY;
@@ -452,20 +456,24 @@ export class RaceWorld {
     let path = "";
     let previousX = Number.NaN;
     let previousY = Number.NaN;
-    for (const point of route.points) {
+    for (const [index, point] of route.points.entries()) {
       const x = (point.p[0] - centerX) * scale + width / 2;
       const y = (-point.p[2] - centerY) * scale + height / 2;
-      if (Math.hypot(x - previousX, y - previousY) < 0.45) {
+      const move = index === 0 || (route.warpIndex >= 0 && index === route.warpIndex + 1);
+      if (!move && Math.hypot(x - previousX, y - previousY) < 0.45) {
         continue;
       }
-      path += `${path ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+      path += `${move ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
       previousX = x;
       previousY = y;
     }
     const first = route.points[0];
     const last = route.points[route.points.length - 1];
-    if (first && last && Math.hypot(first.p[0] - last.p[0], first.p[2] - last.p[2]) < 8) {
-      path += "Z";
+    if (first && last && route.warpIndex !== route.points.length - 1 &&
+        Math.hypot(first.p[0] - last.p[0], first.p[2] - last.p[2]) < 8) {
+      const x = (first.p[0] - centerX) * scale + width / 2;
+      const y = (-first.p[2] - centerY) * scale + height / 2;
+      path += `L${x.toFixed(1)} ${y.toFixed(1)}`;
     }
     return {
       centerX,
@@ -490,6 +498,7 @@ export class RaceWorld {
     }
     this.clearWeather();
     this.route = null;
+    this.collision = null;
     this.minimap = null;
   }
 

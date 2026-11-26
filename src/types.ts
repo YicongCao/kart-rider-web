@@ -33,6 +33,7 @@ export interface RouteData {
   length: number;
   halfWidth: number;
   points: RoutePoint[];
+  warp?: { from: Vec3; to: Vec3; yaw: number; gate: [Vec3, Vec3, Vec3] };
 }
 
 export interface RouteSample {
