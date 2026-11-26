@@ -283,6 +283,13 @@ kbd {
 
 .loading-hint.is-error {
   color: #ffb7a6;
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border: 1px solid #b85b45;
+  background: #3a1c16;
+  overflow-wrap: anywhere;
 }
 
 .modal-layer {

@@ -60,7 +60,7 @@ export class Hud {
         <div class="race-slots" aria-label="道具栏">
           <i class="race-slot"></i><i class="race-slot race-slot-current" data-item-slot></i>
         </div>
-        <div class="race-item-tip" data-item-tip><b aria-hidden="true">!</b><span>漂移集气，充满后按 Ctrl 加速</span><small>漂移集气，充满后点按氮气</small></div>
+        <div class="race-item-tip" data-item-tip hidden><b aria-hidden="true">!</b><span>漂移集气，充满后按 Ctrl 加速</span><small>漂移集气，充满后点按氮气</small></div>
         <div class="race-standing" aria-label="当前排名，第 1 名，共 1 人">
           <div class="race-place"><b>1</b><strong>st</strong><small>/1</small></div>
           <div class="race-driver"><b>1</b><span>车手</span></div>
@@ -69,7 +69,7 @@ export class Hud {
         <div class="race-score">
           <div class="race-lap" aria-label="圈数"><b data-lap>1</b><small>/<span data-total-laps>2</span></small></div>
           <div class="race-clock"><span>比赛时间</span><strong data-race-time>00:00:00</strong></div>
-          <div class="race-clock"><span>最佳单圈</span><strong data-best-lap>00:00:00</strong></div>
+          <div class="race-clock"><span>最佳单圈</span><strong data-best-lap>--:--.---</strong></div>
         </div>
         <div class="race-map" data-race-map>
           <div class="race-map-window">
@@ -88,9 +88,6 @@ export class Hud {
         </div>
 
         <div class="grid-preview is-hidden" data-grid-preview>
-          <div class="grid-mode">标准速度　计时赛 / 个人赛</div>
-          <div class="grid-theme" data-grid-theme></div>
-          <div class="grid-track" data-grid-track></div>
           <div class="grid-card">
             <img data-grid-card alt="" />
             <div class="grid-difficulty"><b>难度</b><span data-grid-difficulty></span></div>
@@ -204,8 +201,6 @@ export class Hud {
     this.overview = false;
     this.query("[data-race-map]")?.classList.remove("is-overview");
     this.query('[data-hud-action="map"]')?.setAttribute("aria-pressed", "false");
-    this.setText("[data-grid-track]", track.name);
-    this.setText("[data-grid-theme]", `${track.theme}主题`);
     const gridCard = this.query<HTMLImageElement>("[data-grid-card]");
     if (gridCard) gridCard.src = `/assets/${track.card}`;
     const difficulty = this.query("[data-grid-difficulty]");
@@ -242,13 +237,13 @@ export class Hud {
     this.setText("[data-total-laps]", String(total));
   }
 
-  setTime(milliseconds: number) {
+  setTime(milliseconds: number, racing = true) {
     this.setText("[data-race-time]", raceClock(milliseconds));
-    this.query("[data-item-tip]")?.classList.toggle("is-visible", milliseconds > 0 && milliseconds < 8000);
+    this.query("[data-item-tip]")?.toggleAttribute("hidden", !(racing && milliseconds > 0 && milliseconds < 8000));
   }
 
   setBestLap(milliseconds: number | null) {
-    this.setText("[data-best-lap]", raceClock(milliseconds ?? 0));
+    this.setText("[data-best-lap]", milliseconds === null ? "--:--.---" : raceClock(milliseconds));
   }
 
   setRaceCounts(collisions: number, boosts: number) {

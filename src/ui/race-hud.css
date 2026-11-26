@@ -42,8 +42,7 @@
   color: white;
   background: #10284dd9;
 }
-.race-item-tip.is-visible,
-#game-ui:has([data-countdown-layer]:not(.is-hidden) :is([data-signal="2"],[data-signal="1"]):not([hidden])) .race-item-tip { display: flex; }
+.race-item-tip.is-visible { display: flex; }
 .race-item-tip b { display: grid; align-self: stretch; place-items: center; width: 1em; font-size: 16em; font-style: italic; background: #154182; }
 .race-item-tip span, .race-item-tip small { font-size: 15em; }
 .race-item-tip small { display: none; }
@@ -174,19 +173,9 @@
   width: 291em;
   right: var(--edge);
   bottom: var(--edge);
-  background: #06090eee;
   overflow: hidden;
 }
-.grid-mode, .grid-theme, .grid-track {
-  padding: .2em .42em;
-  font-size: 16em;
-  line-height: 1.16;
-}
-.grid-mode { background: #373e4c; }
-.grid-theme { color: #b5c3ce; }
-.grid-track { background: #04313a; color: #00cee6; }
-.grid-track::before { content: "▱ "; }
-.grid-card { position: relative; border: 2px solid #111; }
+.grid-card { position: relative; border: 2px solid #ffffffcc; }
 .grid-card img { display: block; width: 100%; aspect-ratio: 352/200; object-fit: cover; }
 .grid-difficulty { position: absolute; top: 10em; left: 12em; display: flex; gap: 8em; align-items: center; }
 .grid-difficulty b { font-size: 14em; font-style: italic; text-shadow: 1px 1px black; }

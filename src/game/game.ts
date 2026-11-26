@@ -236,6 +236,8 @@ export class Game {
     this.phase = "loading";
     this.input.releaseAll();
     (document.activeElement as HTMLElement | null)?.blur();
+    this.world.update(0);
+    this.world.render();
     this.menu.hide();
     this.hud.hide();
     void this.audio.unlock();
@@ -454,7 +456,7 @@ export class Game {
     }
 
     const timeMs = state.time * 1000;
-    this.hud.setTime(timeMs);
+    this.hud.setTime(timeMs, this.phase === "racing");
     this.hud.setSpeed(groundSpeed(state) * 3.6);
     this.hud.setGauge(state.gauge, state.gauge >= 0.999);
     this.hud.setDrift(state.drifting, state.gauge);

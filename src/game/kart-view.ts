@@ -127,13 +127,14 @@ export class KartView {
     ]);
 
     const kartScene = this.prepareModel(kart, true);
+    const characterScene = this.prepareModel(character, false);
     this.model.add(kartScene);
 
     // The seat node places the Y-up character rig in the kart.
     const rekart = kartScene.getObjectByName("ReKart");
-    const riderRoot = character.scene.getObjectByName("char_root");
+    const riderRoot = characterScene.getObjectByName("char_root");
     if (rekart && riderRoot) {
-      const seat = rekart.children[6];
+      const seat = rekart.children.find((child) => child.name === "seat") ?? rekart.children[6];
       seat.add(riderRoot);
       this.rider = riderRoot;
       this.mixer = new AnimationMixer(this.rider);
@@ -149,10 +150,12 @@ export class KartView {
         this.riderActions.set(name, action);
       }
 
-      this.handle = (rekart.children[1]?.children[0] as Mesh | undefined) ?? null;
-      this.wheels = [2, 3, 4, 5].map(
-        (index) => (rekart.children[index]?.children[0] as Mesh | undefined) ?? null,
-      );
+      const handleNode = rekart.children.find((child) => child.name === "handle");
+      this.handle = (handleNode?.children[0] as Mesh | undefined) ?? null;
+      this.wheels = ["wheel0", "wheel1", "wheel2", "wheel3"].map((name) => {
+        const wheel = rekart.children.find((child) => child.name === name);
+        return (wheel?.children[0] as Mesh | undefined) ?? null;
+      });
       for (const mesh of [this.handle, ...this.wheels]) {
         if (!mesh) continue;
         mesh.updateMatrix();
