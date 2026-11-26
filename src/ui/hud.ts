@@ -266,7 +266,9 @@ export class Hud {
     this.lastSpeed = speed;
     const digits = String(speed);
     this.setText("[data-speed]", digits);
-    this.query("[data-tacho]")?.classList.toggle("is-moving", speed > 0);
+    const dial = this.query("[data-tacho]");
+    dial?.classList.toggle("is-moving", speed > 0);
+    dial?.classList.toggle("is-fast", speed >= 160);
     this.query("[data-speed-digits]")?.querySelectorAll("i").forEach((sprite, index) => {
       const digit = digits[index];
       sprite.hidden = digit === undefined;

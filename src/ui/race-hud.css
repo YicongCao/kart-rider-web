@@ -228,7 +228,7 @@
 .race-speed > span, .race-tacho-icons { display: flex; }
 .race-speed i { display: block; width: 36em; height: 44em; background: url("/assets/ui/race/tacho_v1_number_1.png") no-repeat 0 center / 1000% 100%; }
 .race-speed i[hidden] { display: none; }
-.is-moving .race-speed i { background-image: url("/assets/ui/race/tacho_v1_number_2.png"); }
+.is-fast .race-speed i { background-image: url("/assets/ui/race/tacho_v1_number_2.png"); }
 .race-tacho-icons { bottom: 7%; gap: 3em; }
 .race-tacho-icons i { width: 28em; height: 19em; background: center/contain no-repeat; }
 .race-tacho-icons i:nth-child(1) { background-image: url("/assets/ui/tacho_v1_icon_1.png"); }

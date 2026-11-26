@@ -16,9 +16,13 @@ import {
   PointsMaterial,
   SRGBColorSpace,
   Scene,
+  ShaderMaterial,
   Texture,
+  TextureLoader,
   WebGLRenderer,
+  WebGLRenderTarget,
 } from "three";
+import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import type { RouteData, TrackInfo } from "../types";
@@ -117,6 +121,37 @@ export class RaceWorld {
   private particleTexture: Texture | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private disposed = false;
+  private boostFrame = new WebGLRenderTarget(1, 1, { colorSpace: SRGBColorSpace });
+  private boostBlur = new ShaderMaterial({
+    uniforms: {
+      frame: { value: this.boostFrame.texture },
+      mask: { value: new TextureLoader().load("/assets/effects/boost-blur-mask.png") },
+      strength: { value: 0 },
+    },
+    depthTest: false,
+    depthWrite: false,
+    vertexShader: `
+      varying vec2 screenUv;
+      void main() {
+        screenUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D frame;
+      uniform sampler2D mask;
+      uniform float strength;
+      varying vec2 screenUv;
+      void main() {
+        vec2 spread = (screenUv - vec2(0.5, 0.54)) * texture2D(mask, screenUv).a * strength;
+        vec3 color = vec3(0.0);
+        for (int i = 0; i < 8; i++) {
+          color += texture2D(frame, screenUv - spread * float(i) / 7.0).rgb;
+        }
+        gl_FragColor = vec4(color / 8.0, 1.0);
+        #include <colorspace_fragment>
+      }`,
+  });
+  private boostScreen = new FullScreenQuad(this.boostBlur);
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -195,8 +230,16 @@ export class RaceWorld {
     this.updateWeather(delta);
   }
 
-  render() {
+  render(boostBlur = 0) {
+    if (boostBlur <= 0) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+    this.renderer.setRenderTarget(this.boostFrame);
     this.renderer.render(this.scene, this.camera);
+    this.renderer.setRenderTarget(null);
+    this.boostBlur.uniforms.strength.value = boostBlur;
+    this.boostScreen.render(this.renderer);
   }
 
   resize() {
@@ -204,6 +247,7 @@ export class RaceWorld {
     const height = window.innerHeight;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(width, height, false);
+    this.boostFrame.setSize(this.renderer.domElement.width, this.renderer.domElement.height);
     this.camera.aspect = width / Math.max(1, height);
     this.camera.updateProjectionMatrix();
   }
@@ -212,6 +256,10 @@ export class RaceWorld {
     this.disposed = true;
     this.resizeObserver?.disconnect();
     this.unloadTrack();
+    this.boostFrame.dispose();
+    this.boostBlur.uniforms.mask.value.dispose();
+    this.boostBlur.dispose();
+    this.boostScreen.dispose();
     this.renderer.dispose();
   }
 

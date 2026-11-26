@@ -6,6 +6,7 @@ import { KartView } from "./kart-view";
 import { RaceWorld } from "./world";
 import type { MinimapProjection } from "./world";
 import {
+  FIXED_STEP_SECONDS,
   KartVehicle,
   type RoadSurface,
   type VehicleState,
@@ -32,6 +33,9 @@ interface DebugSnapshot {
   gauge: number;
   drifting: boolean;
   boosting: boolean;
+  boostKind: VehicleState["boostKind"];
+  miniBoostCount: number;
+  nitroCount: number;
   x: number;
   y: number;
   z: number;
@@ -90,7 +94,6 @@ export class Game {
   private previousBoostCount = 0;
   private previousGauge = 0;
   private previousCollisionCount = 0;
-  private nitroUses = 0;
   private kartLoaded = false;
   private gridElapsed = 0;
   private countdownBeat = 0;
@@ -176,6 +179,7 @@ export class Game {
     const elapsed = this.lastFrame > 0 ? Math.max(0, (now - this.lastFrame) / 1000) : 0;
     const rawDelta = Math.min(0.1, elapsed);
     this.lastFrame = now;
+    if (this.phase !== "racing") this.input.discardTransitions();
 
     if (this.phase === "menu" || this.phase === "loading") {
       this.audio.update(rawDelta, 0, false, false, false);
@@ -183,16 +187,17 @@ export class Game {
     }
 
     if (this.phase === "racing" && this.vehicle) {
-      const keys = this.input.snapshot();
-      const state = this.vehicle.step(rawDelta, {
-        throttle: keys.throttle ? 1 : 0,
-        brake: keys.brake ? 1 : 0,
-        /// Physics' +right turns to the chase-camera's left; invert for D = right.
-        steer: -keys.steer,
-        drift: keys.drift,
-        boost: keys.boost,
+      const vehicle = this.vehicle;
+      this.input.advanceFrame(now - rawDelta * 1000, now, FIXED_STEP_SECONDS * 1000, (seconds, keys) => {
+        vehicle.step(seconds, {
+          throttle: Number(keys.throttle),
+          brake: Number(keys.brake),
+          steer: -keys.steer, // Positive physics yaw turns left on the chase camera.
+          drift: keys.drift,
+          boost: keys.boost,
+        });
       });
-      this.updateRace(state, rawDelta);
+      this.updateRace(vehicle.state, rawDelta);
     } else if (this.phase === "paused" || this.phase === "finished") {
       this.audio.update(rawDelta, 0, false, false, false);
     } else if (this.phase === "countdown" && this.vehicle) {
@@ -201,6 +206,7 @@ export class Game {
       if (!document.hidden) this.updateGrid(Math.min(1, elapsed));
     }
 
+    let blur = 0;
     if (this.phase === "racing" && this.vehicle) {
       const state = this.vehicle.state;
       this.audio.update(
@@ -210,10 +216,13 @@ export class Game {
         state.drifting,
         state.boosting,
       );
+      if (state.boostKind === "drift") {
+        blur = 0.035 * MathUtils.smoothstep(state.boostElapsed, 0, 0.1) *
+          MathUtils.smoothstep(state.boostRemaining, 0, 0.18);
+      }
     }
-
     this.world.update(rawDelta);
-    this.world.render();
+    this.world.render(blur);
   };
 
   private async startRace(trackId: string) {
@@ -357,7 +366,6 @@ export class Game {
     this.previousBoostCount = 0;
     this.previousGauge = 0;
     this.previousCollisionCount = 0;
-    this.nitroUses = 0;
     this.routeForward = [start.f[0], start.f[1], start.f[2]];
     this.wrongWay = false;
     this.hud.setLap(1, TOTAL_LAPS);
@@ -386,6 +394,7 @@ export class Game {
 
   private updateGrid(delta: number) {
     if (!this.vehicle) return;
+    this.kartView.updateExhaust(this.vehicle.state, delta);
     this.gridElapsed += delta;
     const remaining = GRID_INTRO_SECONDS + 3 - this.gridElapsed;
     this.updateGridCamera(this.vehicle.state, Math.min(1, this.gridElapsed / GRID_INTRO_SECONDS));
@@ -449,7 +458,7 @@ export class Game {
     this.hud.setSpeed(groundSpeed(state) * 3.6);
     this.hud.setGauge(state.gauge, state.gauge >= 0.999);
     this.hud.setDrift(state.drifting, state.gauge);
-    this.hud.setBoost(state.boosting);
+    this.hud.setBoost(state.boostKind === "start" || state.boostKind === "nitro");
 
     this.updateMinimap(state);
 
@@ -462,14 +471,11 @@ export class Game {
     }
 
     if (state.boostCount > this.previousBoostCount) {
-      const wasStartBoost = state.boostCount === 1 && state.boosting && state.time < 1.2;
-      this.audio.sfx(wasStartBoost ? "boostDrift" : "booster");
-      if (wasStartBoost) {
+      this.audio.sfx(state.lastBoostKind === "drift" ? "boostDrift" : "booster");
+      if (state.lastBoostKind === "start") {
         this.hud.notice("完美起步", 1300);
-      } else {
-        this.nitroUses++;
-        this.hud.setRaceCounts(state.collisionCount, this.nitroUses);
       }
+      this.hud.setRaceCounts(state.collisionCount, state.nitroCount);
     }
     this.previousBoostCount = state.boostCount;
 
@@ -480,7 +486,7 @@ export class Game {
 
     if (state.collisionCount !== this.previousCollisionCount) {
       this.previousCollisionCount = state.collisionCount;
-      this.hud.setRaceCounts(state.collisionCount, this.nitroUses);
+      this.hud.setRaceCounts(state.collisionCount, state.nitroCount);
       this.audio.sfx("collide");
     }
 
@@ -555,8 +561,10 @@ export class Game {
     this.cameraYaw = normalizeAngle(this.cameraYaw + yawError * (1 - Math.exp(-5.5 * delta)));
     const distance = 6.6 + Math.min(0.65, speed * 0.013);
     const height = 2.8 + Math.min(0.3, speed * 0.005);
-    const targetFov = 60 + Math.min(6, speed * 0.12) + (state.boosting ? 4 : 0);
-    const fov = snap ? targetFov : MathUtils.damp(this.world.camera.fov, targetFov, 3, delta);
+    const mini = state.boostKind === "drift";
+    const boostFov = mini ? 4 * MathUtils.smoothstep(state.boostRemaining, 0, 0.12) : state.boosting ? 4 : 0;
+    const targetFov = 60 + Math.min(6, speed * 0.12) + boostFov;
+    const fov = snap ? targetFov : MathUtils.damp(this.world.camera.fov, targetFov, mini ? 9 : 3, delta);
     this.placeCamera(state, this.cameraYaw, distance, height, this.cameraYaw, 5.4, fov, 0.55);
   }
 
@@ -780,6 +788,9 @@ export class Game {
           gauge: state?.gauge ?? 0,
           drifting: state?.drifting ?? false,
           boosting: state?.boosting ?? false,
+          boostKind: state?.boostKind ?? "none",
+          miniBoostCount: state?.miniBoostCount ?? 0,
+          nitroCount: state?.nitroCount ?? 0,
           x: state?.x ?? 0,
           y: state?.y ?? 0,
           z: state?.z ?? 0,

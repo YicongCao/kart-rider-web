@@ -24,6 +24,9 @@ export class InputController {
   };
   private actionHandler: (action: GameAction) => void;
   private touchRoot: HTMLElement | null = null;
+  private sampled = this.snapshot();
+  private sampledSince = -Infinity;
+  private changes: { at: number; keys: KartInput }[] = [];
 
   constructor(actionHandler: (action: GameAction) => void) {
     this.actionHandler = actionHandler;
@@ -77,6 +80,41 @@ export class InputController {
     };
   }
 
+  // A throttle release and re-press can both arrive between animation frames.
+  // Replay the intermediate states in order, giving each at least one physics tick.
+  advanceFrame(
+    start: number, end: number, tickMs: number,
+    advance: (seconds: number, keys: KartInput) => void,
+  ) {
+    let cursor = start;
+    let count = 0;
+    for (const change of this.changes) {
+      const at = Math.max(cursor, change.at, this.sampledSince + tickMs);
+      if (at > end) break;
+      if (at > cursor) advance((at - cursor) / 1000, this.sampled);
+      this.sampled = change.keys;
+      this.sampledSince = at;
+      cursor = at;
+      count++;
+    }
+    if (count) this.changes.splice(0, count);
+    if (end > cursor) advance((end - cursor) / 1000, this.sampled);
+  }
+
+  discardTransitions() {
+    if (this.changes.length) this.sampled = this.changes[this.changes.length - 1].keys;
+    this.changes.length = 0;
+    this.sampledSince = -Infinity;
+  }
+
+  private recordChange() {
+    const keys = this.snapshot();
+    const previous = this.changes.at(-1)?.keys ?? this.sampled;
+    if (keys.throttle === previous.throttle && keys.brake === previous.brake &&
+        keys.steer === previous.steer && keys.drift === previous.drift && keys.boost === previous.boost) return;
+    this.changes.push({ at: performance.now(), keys });
+  }
+
   releaseAll = () => {
     this.pressed.clear();
     this.touch = {
@@ -87,6 +125,9 @@ export class InputController {
       drift: false,
       boost: false,
     };
+    this.changes.length = 0;
+    this.sampled = this.snapshot();
+    this.sampledSince = -Infinity;
     this.touchRoot
       ?.querySelectorAll(".is-down")
       .forEach((element) => element.classList.remove("is-down"));
@@ -106,7 +147,10 @@ export class InputController {
     if (BLOCKED_KEYS.has(event.code)) {
       event.preventDefault();
     }
-    this.pressed.add(event.code);
+    if (!this.pressed.has(event.code)) {
+      this.pressed.add(event.code);
+      this.recordChange();
+    }
 
     if (event.repeat) {
       return;
@@ -123,12 +167,13 @@ export class InputController {
   };
 
   private onKeyUp = (event: KeyboardEvent) => {
-    this.pressed.delete(event.code);
+    if (this.pressed.delete(event.code)) this.recordChange();
   };
 
   private setTouch(control: string, down: boolean) {
     if (control in this.touch) {
       this.touch[control as keyof typeof this.touch] = down;
+      this.recordChange();
     }
   }
 }

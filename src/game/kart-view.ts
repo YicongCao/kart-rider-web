@@ -1,5 +1,4 @@
 import {
-  AdditiveBlending,
   type AnimationAction,
   AnimationMixer,
   BufferAttribute,
@@ -14,14 +13,13 @@ import {
   Object3D,
   PlaneGeometry,
   Scene,
-  Sprite,
-  SpriteMaterial,
   SRGBColorSpace,
-  Texture,
+  TextureLoader,
   Vector3,
 } from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
+import { KartExhaust } from "./exhaust";
 import type { VehicleState } from "./vehicle";
 import type { RouteSample } from "../types";
 
@@ -74,10 +72,7 @@ export class KartView {
   private loaded = false;
   private loadPromise: Promise<void> | null = null;
   private shadow: Mesh | null = null;
-  private boostFlames: Sprite[] = [];
-  private driftSmoke: Sprite[] = [];
-  private flameTexture: Texture | null = null;
-  private smokeTexture: Texture | null = null;
+  private exhaust: KartExhaust | null = null;
   private previousYaw = 0;
   private roll = 0;
   private bounce = 0;
@@ -123,9 +118,12 @@ export class KartView {
       onProgress?.(total > 0 ? loaded / total : 0);
     };
     const loader = new GLTFLoader(manager);
-    const [kart, character] = await Promise.all([
+    const [kart, character, booster, wave, smoke] = await Promise.all([
       loader.loadAsync(KART_URL),
       loader.loadAsync(CHARACTER_URL),
+      loader.loadAsync("/assets/effects/default-booster.glb"),
+      loader.loadAsync("/assets/effects/default-wave.glb"),
+      new TextureLoader(manager).loadAsync("/assets/effects/exhaust.png"),
     ]);
 
     const kartScene = this.prepareModel(kart, true);
@@ -163,7 +161,9 @@ export class KartView {
       }
     }
 
-    this.buildFlames();
+    const exhaustPort = kartScene.getObjectByName("port0");
+    if (!rekart || !exhaustPort) throw new Error("Cotton1 exhaust attachment is missing");
+    this.exhaust = new KartExhaust(exhaustPort, rekart, booster, wave, smoke, this.scene);
     this.loaded = true;
     this.root.visible = true;
     onProgress?.(1);
@@ -206,32 +206,16 @@ export class KartView {
       this.applyPartRotation(wheel, rotation);
     });
 
-    const speedScale = Math.min(1, Math.abs(state.speed) / 45);
-    for (const [index, flame] of this.boostFlames.entries()) {
-      const active = state.boosting || (state.drifting && speedScale > 0.4);
-      flame.visible = active;
-      if (active) {
-        const flicker = 0.75 + Math.random() * 0.55;
-        flame.scale.set(0.23 + speedScale * 0.08, (0.65 + speedScale * 0.9) * flicker, 1);
-        (flame.material as SpriteMaterial).color.set(state.boosting ? "#ffb23d" : "#58d9ff");
-        (flame.material as SpriteMaterial).opacity = 0.55 + Math.random() * 0.35;
-        flame.position.x = (index === 0 ? -1 : 1) * 0.38;
-      }
-    }
-
-    for (const smoke of this.driftSmoke) {
-      smoke.visible = state.drifting && speedScale > 0.35;
-      if (smoke.visible) {
-        const scale = 0.6 + Math.random() * 0.8;
-        smoke.scale.set(scale, scale, 1);
-        (smoke.material as SpriteMaterial).opacity = 0.12 + Math.random() * 0.08;
-      }
-    }
-
+    this.updateExhaust(state, dt);
     this.updateTrail(state);
   }
 
+  updateExhaust(state: VehicleState, dt: number) {
+    if (this.root.visible) this.exhaust?.update(state, dt);
+  }
+
   resetTrail() {
+    this.exhaust?.reset();
     this.trailStarted = false;
     this.trailVertexCount = 0;
     this.trailCursor = 0;
@@ -240,6 +224,7 @@ export class KartView {
 
   setVisible(visible: boolean) {
     this.root.visible = visible && this.loaded;
+    if (!visible) this.exhaust?.reset();
   }
 
   private updateRider(state: VehicleState, steer: number, dt: number) {
@@ -276,8 +261,7 @@ export class KartView {
     this.scene.remove(this.trailMesh);
     this.trailGeometry.dispose();
     (this.trailMesh.material as MeshBasicMaterial).dispose();
-    this.flameTexture?.dispose();
-    this.smokeTexture?.dispose();
+    this.exhaust?.dispose();
     this.root.traverse((object) => {
       if (object instanceof Mesh) {
         object.geometry.dispose();
@@ -346,82 +330,6 @@ export class KartView {
     mesh.position.y = 0.03;
     mesh.renderOrder = 2;
     return mesh;
-  }
-
-  private buildFlames() {
-    if (!this.flameTexture) this.flameTexture = this.createFlameTexture();
-    if (!this.smokeTexture) this.smokeTexture = this.createSmokeTexture();
-
-    for (const offset of [-1, 1]) {
-      const material = new SpriteMaterial({
-        map: this.flameTexture,
-        color: "#62daff",
-        transparent: true,
-        opacity: 0.78,
-        depthWrite: false,
-        blending: AdditiveBlending,
-        toneMapped: false,
-      });
-      const flame = new Sprite(material);
-      flame.position.set(offset * 0.38, 0.31, -0.88);
-      flame.renderOrder = 5;
-      this.model.add(flame);
-      this.boostFlames.push(flame);
-
-      const smokeMaterial = new SpriteMaterial({
-        map: this.smokeTexture,
-        color: "#d8f6ff",
-        transparent: true,
-        opacity: 0.15,
-        depthWrite: false,
-        toneMapped: false,
-      });
-      const smoke = new Sprite(smokeMaterial);
-      smoke.position.set(offset * 0.62, 0.24, -0.7);
-      smoke.renderOrder = 4;
-      this.model.add(smoke);
-      this.driftSmoke.push(smoke);
-    }
-  }
-
-  private createFlameTexture() {
-    const canvas = document.createElement("canvas");
-    canvas.width = 64;
-    canvas.height = 128;
-    const context = canvas.getContext("2d");
-    if (context) {
-      context.translate(32, 70);
-      const gradient = context.createRadialGradient(0, 0, 3, 0, 0, 64);
-      gradient.addColorStop(0, "rgba(255,255,255,1)");
-      gradient.addColorStop(0.22, "rgba(255,244,190,.96)");
-      gradient.addColorStop(0.5, "rgba(255,151,48,.62)");
-      gradient.addColorStop(1, "rgba(255,78,16,0)");
-      context.fillStyle = gradient;
-      context.beginPath();
-      context.ellipse(0, 0, 30, 62, 0, 0, Math.PI * 2);
-      context.fill();
-    }
-    const texture = new CanvasTexture(canvas);
-    texture.colorSpace = SRGBColorSpace;
-    return texture;
-  }
-
-  private createSmokeTexture() {
-    const canvas = document.createElement("canvas");
-    canvas.width = 64;
-    canvas.height = 64;
-    const context = canvas.getContext("2d");
-    if (context) {
-      const gradient = context.createRadialGradient(32, 32, 2, 32, 32, 31);
-      gradient.addColorStop(0, "rgba(255,255,255,.75)");
-      gradient.addColorStop(0.55, "rgba(220,244,255,.22)");
-      gradient.addColorStop(1, "rgba(220,244,255,0)");
-      context.fillStyle = gradient;
-      context.fillRect(0, 0, 64, 64);
-    }
-    const texture = new CanvasTexture(canvas);
-    texture.colorSpace = SRGBColorSpace;
-    return texture;
   }
 
   private createTrail() {

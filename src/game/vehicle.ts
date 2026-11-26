@@ -17,6 +17,7 @@ import type { TrackWallContact } from "./track-collision";
 export const FIXED_STEP_SECONDS = 0.002;
 
 export type DriftPhase = "none" | "trigger" | "active" | "decay";
+export type BoostKind = "none" | "start" | "drift" | "nitro";
 
 export interface VehicleInput {
   /** 0..1. */
@@ -44,9 +45,13 @@ export interface VehicleState {
   /** Nitro gauge as 0..1, including uncommitted drift charge. */
   gauge: number;
   boosting: boolean;
+  boostKind: BoostKind;
+  lastBoostKind: BoostKind;
   drifting: boolean;
   driftPhase: DriftPhase;
   boostCount: number;
+  miniBoostCount: number;
+  nitroCount: number;
   collisionCount: number;
   /** Distance along the course in metres, when a route is attached. */
   progress: number;
@@ -57,6 +62,8 @@ export interface VehicleState {
   /** Signed offset from the route centreline. Positive is route-right. */
   lateralOffset: number;
   boostRemaining: number;
+  /** Seconds since the current exhaust effect ignited. Zero when inactive. */
+  boostElapsed: number;
   /** Simulation time in seconds. */
   time: number;
 }
@@ -95,6 +102,8 @@ export interface VehicleTuning {
   /** Gauge gain calibrated in the Web simulator. */
   driftGaugeScale: number;
   boostDuration: number;
+  miniBoostDuration: number;
+  miniBoostWindow: number;
   startBoostDuration: number;
   startBoostWindow: number;
   wallRestitution: number;
@@ -138,8 +147,12 @@ export const DEFAULT_TUNING: VehicleTuning = {
   driftMaxGauge: 4300,
   driftGaugeScale: 3.7,
   boostDuration: 3,
-  // Official startBoosterTimeSpeed is not present in the extracted table.
-  // 0.5 s follows the existing kart.html prototype and is an approximation.
+  // Cotton1's BodyParam omits driftBoostTick and driftBoostMulAccelFactor.
+  // The regular boost factor applies. P3563 replays and practice runs show
+  // a half-second burst. The window for reapplying throttle is independent.
+  miniBoostDuration: 0.5,
+  miniBoostWindow: 0.5,
+  // Existing countdown/start calibration.
   startBoostDuration: 0.5,
   startBoostWindow: 0.1,
   wallRestitution: 0.5,
@@ -388,8 +401,13 @@ export class KartVehicle {
   private committedGauge: number;
   private pendingGauge: number;
   private boostRemainingValue: number;
-  private boostKind: "none" | "start" | "nitro";
+  private boostStartedAt = 0;
+  private boostKind: BoostKind = "none";
+  private lastBoostKind: BoostKind = "none";
+  private miniBoostWindowUntil = -Infinity;
   private boostActivations: number;
+  private miniBoostCount = 0;
+  private nitroCount = 0;
   private collisionCount = 0;
   private lastImpact = -Infinity;
   private startBoostConsumed: boolean;
@@ -432,7 +450,6 @@ export class KartVehicle {
     ) * this.configuration.driftMaxGauge;
     this.pendingGauge = 0;
     this.boostRemainingValue = 0;
-    this.boostKind = "none";
     this.boostActivations = 0;
     this.startBoostConsumed = false;
     this.startAtSecondsValue =
@@ -480,15 +497,20 @@ export class KartVehicle {
       lateralSpeed: this.lateralVelocity,
       gauge: clamp(gaugeTotal / this.configuration.driftMaxGauge, 0, 1),
       boosting: this.boostRemainingValue > 0,
+      boostKind: this.boostKind,
+      lastBoostKind: this.lastBoostKind,
       drifting: this.driftPhaseValue !== "none",
       driftPhase: this.driftPhaseValue,
       boostCount: this.boostActivations,
+      miniBoostCount: this.miniBoostCount,
+      nitroCount: this.nitroCount,
       collisionCount: this.collisionCount,
       progress: this.routeProgress,
       lapProgress: this.lapProgressValue,
       lap: this.lapValue,
       lateralOffset: this.lateralOffsetValue,
       boostRemaining: this.boostRemainingValue,
+      boostElapsed: this.boostKind === "none" ? 0 : this.elapsedSeconds - this.boostStartedAt,
       time: this.elapsedSeconds,
     };
   }
@@ -516,6 +538,8 @@ export class KartVehicle {
   /** Respawn on the course without resetting race timing or collected gauge. */
   resetPose(x: number, y: number, z: number, yaw: number, speed = 0): void {
     this.finishDrift();
+    this.miniBoostWindowUntil = -Infinity;
+    if (this.boostKind === "drift") this.endBoost();
     this.x = x;
     this.y = y;
     this.z = z;
@@ -602,6 +626,12 @@ export class KartVehicle {
       );
     }
 
+    if (!throttleDown && this.boostKind === "drift") this.endBoost();
+    this.updateDriftState(driftChord, driftEdge, steerTarget, partialStep);
+    if (this.forwardSpeed < this.configuration.driftStopSpeed) {
+      this.miniBoostWindowUntil = -Infinity;
+    }
+
     if (
       throttleEdge &&
       !this.startBoostConsumed &&
@@ -611,30 +641,25 @@ export class KartVehicle {
         this.configuration.startBoostWindow + 1e-9
     ) {
       this.startBoostConsumed = true;
-      this.boostKind = "start";
-      this.boostRemainingValue = this.configuration.startBoostDuration;
-      this.boostActivations += 1;
+      this.beginBoost("start", this.configuration.startBoostDuration);
     }
 
     if (
       boostEdge &&
-      this.boostRemainingValue <= 0 &&
+      (this.boostKind === "none" || this.boostKind === "drift") &&
       this.committedGauge + this.pendingGauge >=
         this.configuration.driftMaxGauge
     ) {
       this.committedGauge = 0;
       this.pendingGauge = 0;
-      this.boostKind = "nitro";
-      this.boostRemainingValue = this.configuration.boostDuration;
-      this.boostActivations += 1;
+      this.nitroCount++;
+      this.beginBoost("nitro", this.configuration.boostDuration);
+    } else if (throttleEdge && this.boostKind === "none" &&
+               this.elapsedSeconds < this.miniBoostWindowUntil) {
+      this.miniBoostWindowUntil = -Infinity;
+      this.miniBoostCount++;
+      this.beginBoost("drift", this.configuration.miniBoostDuration);
     }
-
-    this.updateDriftState(
-      driftChord,
-      driftEdge,
-      steerTarget,
-      partialStep,
-    );
 
     const boostActive = this.boostRemainingValue > 0;
     const boostMultiplier = boostActive
@@ -653,7 +678,8 @@ export class KartVehicle {
       Math.exp(-forwardMagnitude / spec.steerConstraint * spec.steeringExponentialScale);
     const travelDirection = this.forwardSpeed < 0 ? -1 : 1;
     const tireForce = spec.tireStiffness * spec.tireGrip * gripMultiplier * Math.min(speed, 1);
-    const trigger = this.driftPhaseValue === "trigger";
+    // Releasing a short Shift tap restores rear grip and ends the entry torque.
+    const trigger = this.driftPhaseValue === "trigger" && driftChord && steerTarget * this.driftDirection > 0;
     const active = this.driftPhaseValue === "active";
     const sliding = speed > 15 && Math.abs(this.lateralVelocity) > 1.2 * forwardMagnitude;
 
@@ -688,7 +714,10 @@ export class KartVehicle {
     }
 
     const driveForce = sliding ? spec.driftEscapeForce : spec.forwardAccel;
-    let forwardForce = driveForce * spec.driveScale * throttle * boostMultiplier * accelerationMultiplier;
+    // On the original C1 a mini pulls from 65 to 107 km/h in 0.44 s.
+    // Its stock thrust matches the recording without the cruise calibration.
+    const driveScale = this.boostKind === "drift" ? 1 : spec.driveScale;
+    let forwardForce = driveForce * driveScale * throttle * boostMultiplier * accelerationMultiplier;
     if (brake > 0) {
       forwardForce -= (this.forwardSpeed > 0.5 ? spec.gripBrake : spec.backwardAccel) * brake;
     }
@@ -703,7 +732,10 @@ export class KartVehicle {
     const yawInertia = spec.mass * spec.yawInertiaPerMass;
     const yawTorque = spec.halfWheelbase * (frontForce - rearForce) - spec.airFriction * this.yawRate;
     this.yawRate += yawTorque / yawInertia * partialStep;
-    if (this.driftPhaseValue === "none") {
+    if (this.driftPhaseValue === "trigger" && !trigger && steerTarget * this.driftDirection < 0) {
+      // Opposite lock with the handbrake released arrests the entry yaw.
+      this.yawRate *= Math.exp(-spec.straightYawDamping * gripMultiplier * partialStep);
+    } else if (this.driftPhaseValue === "none") {
       // Flat-ground self-alignment after the slip window closes. Centered
       // wheels settle promptly when the driver lets go of the direction key.
       const damping = spec.straightYawDamping +
@@ -741,10 +773,8 @@ export class KartVehicle {
       (forwardZ * this.forwardSpeed + rightZ * this.lateralVelocity) *
       partialStep;
 
-    if (
-      this.driftPhaseValue === "active" ||
-      this.driftPhaseValue === "decay"
-    ) {
+    if (active || this.driftPhaseValue === "decay" ||
+        (this.driftPhaseValue === "trigger" && !trigger)) {
       this.fillDriftGauge(
         driftGaugeMultiplier,
         partialStep,
@@ -759,7 +789,7 @@ export class KartVehicle {
         this.boostRemainingValue - partialStep,
       );
       if (this.boostRemainingValue === 0) {
-        this.boostKind = "none";
+        this.endBoost();
       }
     }
 
@@ -767,6 +797,24 @@ export class KartVehicle {
     this.previousThrottleDown = throttleDown;
     this.previousDriftChord = driftChord;
     this.previousBoostDown = boostHeld;
+  }
+
+  private beginBoost(kind: Exclude<BoostKind, "none">, duration: number): void {
+    this.lastBoostKind = kind;
+    this.boostStartedAt = this.elapsedSeconds;
+    this.boostRemainingValue = Math.max(0, duration);
+    this.boostKind = this.boostRemainingValue > 0 ? kind : "none";
+    this.boostActivations++;
+  }
+
+  private endBoost(): void {
+    this.boostKind = "none";
+    this.boostRemainingValue = 0;
+  }
+
+  private beginDriftRecovery(): void {
+    this.driftPhaseValue = "decay";
+    this.driftTimer = this.configuration.driftDecayTime;
   }
 
   private updateDriftState(
@@ -778,9 +826,12 @@ export class KartVehicle {
     if (this.driftPhaseValue !== "none" && this.forwardSpeed < this.configuration.driftStopSpeed) {
       this.finishDrift();
     }
+    const regripped = -this.lateralVelocity * this.driftDirection <= 0.12 * this.forwardSpeed;
+    const canLink = this.driftPhaseValue === "decay" && this.driftTimer <= 0;
     if (driftEdge && this.forwardSpeed >= this.configuration.driftStopSpeed &&
-      (this.driftPhaseValue === "none" || (this.driftPhaseValue === "decay" && this.driftTimer <= 0))) {
-      this.finishDrift();
+      (this.driftPhaseValue === "none" || canLink)) {
+      if (canLink && regripped) this.completeDrift();
+      else this.finishDrift();
       this.driftPhaseValue = "trigger";
       this.driftDirection = Math.sign(steerTarget);
       this.driftTimer = this.configuration.driftTrigTime;
@@ -790,20 +841,33 @@ export class KartVehicle {
     if (this.driftPhaseValue === "trigger") {
       this.driftTimer -= deltaSeconds;
       if (this.driftTimer <= 0) {
-        this.driftPhaseValue = holdingDirection ? "active" : "decay";
-        this.driftTimer = holdingDirection ? 0 : this.configuration.driftDecayTime;
+        if (holdingDirection) {
+          this.driftPhaseValue = "active";
+          this.driftTimer = 0;
+        } else if (regripped) {
+          // A countersteered tap can already be straight at the end of ignition.
+          this.completeDrift();
+        } else {
+          this.beginDriftRecovery();
+        }
       }
     } else if (this.driftPhaseValue === "active" && !holdingDirection) {
-      this.driftPhaseValue = "decay";
-      this.driftTimer = this.configuration.driftDecayTime;
+      this.beginDriftRecovery();
     } else if (this.driftPhaseValue === "decay") {
       this.driftTimer -= deltaSeconds;
       // The tires regrip first, then the visible skid and gauge window end
       // as the velocity catches the chassis or crosses its original heading.
-      if (this.driftTimer <= 0 && -this.lateralVelocity * this.driftDirection <= 0.12 * this.forwardSpeed) {
-        this.finishDrift();
+      if (this.driftTimer <= 0 && regripped) {
+        this.completeDrift();
       }
     }
+  }
+
+  private completeDrift(): void {
+    // A completed skid grants one accelerator press, even if the next
+    // drift begins before the player uses it.
+    this.miniBoostWindowUntil = this.elapsedSeconds + this.configuration.miniBoostWindow;
+    this.finishDrift();
   }
 
   private finishDrift(): void {

@@ -25,7 +25,7 @@ The game expects converted assets under `public/assets/`. They are not downloade
 - `W` / `↑`: accelerate
 - `S` / `↓`: brake
 - `A` / `D` or `←` / `→`: steer
-- `Shift`: drift
+- Hold a direction and tap `Shift` to drift. Countersteer to straighten, then release and press the accelerator to mini-boost. Start another short drift during the burst to chain the next one.
 - `Ctrl` or `Space`: use nitro
 - `R`: reset to the course
 - `Esc`: pause
