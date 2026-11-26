@@ -12,7 +12,6 @@ import {
 } from "./vehicle";
 import { Menu } from "../ui/menu";
 import { GRID_SIGNALS, Hud, type RaceResult } from "../ui/hud";
-import { formatTime } from "../util/format";
 
 const TOTAL_LAPS = 2;
 const RECORD_KEY = "kart-rider-remake.records.v1";
@@ -30,6 +29,7 @@ interface DebugSnapshot {
   lap: number;
   speedKmh: number;
   gauge: number;
+  n2oCharges: number;
   drifting: boolean;
   boosting: boolean;
   boostKind: VehicleState["boostKind"];
@@ -91,7 +91,7 @@ export class Game {
   private bestLap = Number.POSITIVE_INFINITY;
   private wrongWay = false;
   private previousBoostCount = 0;
-  private previousGauge = 0;
+  private previousN2oCharges = 0;
   private previousCollisionCount = 0;
   private kartLoaded = false;
   private gridElapsed = 0;
@@ -365,13 +365,13 @@ export class Game {
     this.currentLap = 0;
     this.bestLap = Number.POSITIVE_INFINITY;
     this.previousBoostCount = 0;
-    this.previousGauge = 0;
+    this.previousN2oCharges = 0;
     this.previousCollisionCount = 0;
     this.routeForward = [start.f[0], start.f[1], start.f[2]];
     this.wrongWay = false;
     this.hud.setLap(1, TOTAL_LAPS);
     this.hud.setTime(0);
-    this.hud.setGauge(0, false);
+    this.hud.setGauge(0, 0);
     this.hud.setDrift(false, 0);
     this.hud.setWrongWay(false);
     this.kartView.resetTrail();
@@ -461,7 +461,7 @@ export class Game {
     const timeMs = state.time * 1000;
     this.hud.setTime(timeMs, this.phase === "racing");
     this.hud.setSpeed(groundSpeed(state) * 3.6);
-    this.hud.setGauge(state.gauge, state.gauge >= 0.999);
+    this.hud.setGauge(state.gauge, state.n2oCharges);
     this.hud.setDrift(state.drifting, state.gauge);
     this.hud.setBoost(state.boostKind === "start" || state.boostKind === "nitro");
 
@@ -484,10 +484,10 @@ export class Game {
     }
     this.previousBoostCount = state.boostCount;
 
-    if (state.gauge >= 0.999 && this.previousGauge < 0.999) {
-      this.hud.notice("氮气已就绪", 1500);
+    if (state.n2oCharges > this.previousN2oCharges) {
+      this.hud.notice("获得 N2O", 1300);
     }
-    this.previousGauge = state.gauge;
+    this.previousN2oCharges = state.n2oCharges;
 
     if (state.collisionCount !== this.previousCollisionCount) {
       this.previousCollisionCount = state.collisionCount;
@@ -525,7 +525,11 @@ export class Game {
         return;
       }
       this.hud.setLap(this.currentLap + 1, TOTAL_LAPS);
-      this.hud.notice(`第 ${this.currentLap} 圈  ${formatTime(lapTime * 1000)}`, 1900);
+      this.hud.noticeLap(
+        this.currentLap,
+        lapTime * 1000,
+        lapTime <= this.bestLap,
+      );
     }
   }
 
@@ -681,7 +685,7 @@ export class Game {
     this.kartView.setVisible(true);
     this.hud.setSpeed(0);
     this.hud.setBoost(false);
-    this.hud.setGauge(0, false);
+    this.hud.setGauge(0, 0);
     this.resetRaceState(track);
     this.audio.playRace(track.music);
   }
@@ -811,6 +815,7 @@ export class Game {
           lap: this.currentLap,
           speedKmh: state ? groundSpeed(state) * 3.6 : 0,
           gauge: state?.gauge ?? 0,
+          n2oCharges: state?.n2oCharges ?? 0,
           drifting: state?.drifting ?? false,
           boosting: state?.boosting ?? false,
           boostKind: state?.boostKind ?? "none",

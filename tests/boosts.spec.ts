@@ -38,21 +38,60 @@ test("countersteering and reapplying throttle gives one short burst with real th
   expect(drive(kart, 20, { throttle: 1 }).boostCount).toBe(1);
 });
 
-test("a fresh drift earns a fresh burst without spending an N2O charge", () => {
+test("a full gauge becomes an N2O slot and a fresh drift still earns a burst", () => {
   const kart = new KartVehicle({ speed: 42, initialGauge: 1 });
+  const converted = drive(kart, 10, {});
+  expect(converted.n2oCharges).toBe(1);
+  expect(converted.gauge).toBeLessThan(0.01);
   for (const direction of [1, -1, 1]) {
     finishSlide(kart, direction);
     drive(kart, 20, {});
     expect(drive(kart, 180, { throttle: 1 }).boostKind).toBe("drift");
   }
   expect(kart.state.miniBoostCount).toBe(3);
-  expect(kart.state.gauge).toBe(1);
+  expect(kart.state.n2oCharges).toBe(1);
   const nitro = drive(kart, 10, { throttle: 1, boost: true });
   expect(nitro.boostKind).toBe("nitro");
   expect(nitro.nitroCount).toBe(1);
-  expect(nitro.gauge).toBeLessThan(0.01);
-  drive(kart, 30, {});
-  expect(drive(kart, 20, { throttle: 1 }).boostKind).toBe("nitro");
+  expect(nitro.n2oCharges).toBe(0);
+  drive(kart, 3050, { throttle: 1 });
+  drive(kart, 20, {});
+  expect(drive(kart, 10, { throttle: 1, boost: true }).boostKind).toBe("none");
+});
+
+test("an N2O slot is consumed only by an accelerating use", () => {
+  const kart = new KartVehicle({ speed: 35, initialN2oCharges: 1 });
+  const idle = drive(kart, 20, { boost: true });
+  expect(idle.boostKind).toBe("none");
+  expect(idle.n2oCharges).toBe(1);
+  drive(kart, 10, {});
+  const fired = drive(kart, 10, { throttle: 1, boost: true });
+  expect(fired.boostKind).toBe("nitro");
+  expect(fired.n2oCharges).toBe(0);
+  expect(fired.nitroCount).toBe(1);
+  drive(kart, 3050, { throttle: 1 });
+  drive(kart, 20, {});
+  const empty = drive(kart, 10, { throttle: 1, boost: true });
+  expect(empty.boostKind).toBe("none");
+  expect(empty.n2oCharges).toBe(0);
+});
+
+test("a drift that fills the gauge awards N2O and resets the bar before the skid ends", () => {
+  const kart = new KartVehicle({
+    speed: 42,
+    tuning: { driftGaugeScale: 5000 },
+  });
+  let awarded = null;
+  for (let i = 0; i < 500; i++) {
+    const state = kart.step(0.002, { throttle: 1, steer: 1, drift: true });
+    if (state.n2oCharges > 0) {
+      awarded = state;
+      break;
+    }
+  }
+  expect(awarded).not.toBeNull();
+  expect(awarded!.gauge).toBeLessThan(0.05);
+  expect(awarded!.drifting).toBe(true);
 });
 
 test("straight driving, early reapplication, an expired drift and respawn give no mini boost", () => {
@@ -121,7 +160,9 @@ test("eight linked drifts can fire the previous burst while the next drift is un
     drive(kart, 180, { throttle: 1, steer: 1 });
   }
   expect(kart.state.nitroCount).toBe(0);
-  expect(kart.state.speed).toBeGreaterThan(42);
+  expect(kart.state.miniBoostCount).toBe(8);
+  expect(kart.state.boostCount).toBe(8);
+  expect(kart.state.boostKind).toBe("drift");
 });
 
 test("the Cotton C1 mini matches the P3563 speedometer while the exhaust is lit", () => {

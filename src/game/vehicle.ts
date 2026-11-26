@@ -28,7 +28,7 @@ export interface VehicleInput {
   steer?: number;
   /** Held drift key. A press is latched at the fixed step where it begins. */
   drift?: boolean;
-  /** Edge-triggered nitro request; consumes a full gauge. */
+  /** Edge-triggered nitro request; consumes one N2O slot while accelerating. */
   boost?: boolean;
 }
 
@@ -55,6 +55,8 @@ export interface VehicleState {
   lateralSpeed: number;
   /** Nitro gauge as 0..1, including uncommitted drift charge. */
   gauge: number;
+  /** N2O items in the two race slots. */
+  n2oCharges: number;
   boosting: boolean;
   boostKind: BoostKind;
   lastBoostKind: BoostKind;
@@ -97,20 +99,37 @@ export interface VehicleTuning {
   tireStiffness: number;
   /** Per-axle tire force multiplier (official tire grip factor calibration). */
   tireGrip: number;
+  /** Peak tire slip angle before the lateral force saturates, in radians. */
+  tireSlipSaturation: number;
   halfWheelbase: number;
   /** Planar moment of inertia divided by mass, in square metres. */
   yawInertiaPerMass: number;
-  yawDamping: number;
-  straightYawDamping: number;
   cornerDrawFactor: number;
   driftTrigTime: number;
   driftDecayTime: number;
   driftSlipFactor: number;
+  /** Calibration for the low-grip branch against the saturated tire model. */
+  driftGripScale: number;
+  /** Calibrated grip multiplier while the drift is regripping. */
+  driftRecoveryGripFactor: number;
+  /** Calibrated longitudinal scrub per m/s of sideslip while drifting. */
+  driftSlipDrag: number;
+  /** Seconds after drift start during which slip scrub is applied. */
+  driftDragDuration: number;
+  /** Calibrated yaw-rate settle after the recorded drift tail, per second. */
+  driftSettleYawDamping: number;
+  /** Seconds from drift start until yaw is actively settled. */
+  driftSettleTime: number;
+  /** Calibrated effective yaw-inertia multiplier while a drift is in progress. */
+  driftYawInertiaFactor: number;
+  /** Scale on the raw maximum steering angle used by the trigger force. */
+  driftTriggerAngleScale: number;
   driftTriggerFactor: number;
   driftEscapeForce: number;
   tireResponseTime: number;
   driftStopSpeed: number;
   driftMaxGauge: number;
+  n2oCapacity: number;
   /** Gauge gain calibrated in the Web simulator. */
   driftGaugeScale: number;
   boostDuration: number;
@@ -144,19 +163,35 @@ export const DEFAULT_TUNING: VehicleTuning = {
   driveScale: 1.175,
   tireStiffness: 980,
   tireGrip: 5,
-  halfWheelbase: 0.5,
-  yawInertiaPerMass: 0.87,
-  yawDamping: 0.35,
-  straightYawDamping: 6,
+  tireSlipSaturation: 0.1,
+  halfWheelbase: 0.65,
+  yawInertiaPerMass: 1 / 12,
   cornerDrawFactor: 0.18,
   driftTrigTime: 0.2,
   driftDecayTime: 0.4,
   driftSlipFactor: 0.2,
+  // The official drift branch multiplies both axles by driftSlipFactor=0.2.
+  // The Web tire clamp saturates at 490 N/axle, so retain that branch while
+  // calibrating the visible P3563 yaw and speed profile below.
+  driftGripScale: 4,
+  driftRecoveryGripFactor: 3.5,
+  driftSlipDrag: 0.5,
+  driftDragDuration: 1.2,
+  driftSettleYawDamping: 6,
+  driftSettleTime: 1.8,
+  // The H5 yaw inertia is mass/12 for grip physics. Keeping the Web drift
+  // feel needs a larger effective inertia than the rigid-body value.
+  driftYawInertiaFactor: 10.44,
+  // Trigger force is front-only and proportional to the raw 10 deg steering
+  // angle. The 3.6 scale replaces the missing triggerRawSteer detail.
+  driftTriggerAngleScale: 3.6,
   driftTriggerFactor: 0.2,
   driftEscapeForce: 2600,
   tireResponseTime: 0.16,
   driftStopSpeed: 5,
   driftMaxGauge: 4300,
+  // Time-attack speed slots hold at most two N2O items.
+  n2oCapacity: 2,
   driftGaugeScale: 3.7,
   boostDuration: 3,
   // Cotton1's BodyParam omits driftBoostTick and driftBoostMulAccelFactor.
@@ -361,6 +396,8 @@ export interface VehicleOptions {
   tuning?: Partial<VehicleTuning>;
   /** Initial nitro gauge, 0..1. */
   initialGauge?: number;
+  /** Initial N2O slot charges. */
+  initialN2oCharges?: number;
   /** Simulation time of the race start, used for the +/-100 ms start boost. */
   startAtSeconds?: number | null;
   route?: RouteSampler | null;
@@ -410,8 +447,10 @@ export class KartVehicle {
   private driftDirection: number;
   private driftTimer: number;
   private driftGaugeElapsed: number;
+  private driftStartSeconds: number;
   private committedGauge: number;
   private pendingGauge: number;
+  private n2oChargesValue: number;
   private boostRemainingValue: number;
   private boostStartedAt = 0;
   private boostKind: BoostKind = "none";
@@ -457,12 +496,18 @@ export class KartVehicle {
     this.driftDirection = 0;
     this.driftTimer = 0;
     this.driftGaugeElapsed = 0;
+    this.driftStartSeconds = -Infinity;
     this.committedGauge = clamp(
       finiteOr(options.initialGauge, 0),
       0,
       1,
     ) * this.configuration.driftMaxGauge;
     this.pendingGauge = 0;
+    this.n2oChargesValue = clamp(
+      Math.floor(finiteOr(options.initialN2oCharges, 0)),
+      0,
+      this.configuration.n2oCapacity,
+    );
     this.boostRemainingValue = 0;
     this.boostActivations = 0;
     this.startBoostConsumed = false;
@@ -527,6 +572,7 @@ export class KartVehicle {
       speed: this.forwardSpeed,
       lateralSpeed: this.lateralVelocity,
       gauge: clamp(gaugeTotal / this.configuration.driftMaxGauge, 0, 1),
+      n2oCharges: this.n2oChargesValue,
       boosting: this.boostRemainingValue > 0,
       boostKind: this.boostKind,
       lastBoostKind: this.lastBoostKind,
@@ -659,17 +705,21 @@ export class KartVehicle {
     );
     const boostCharge = Math.max(0, finiteOr(surface.boostCharge, 0));
 
+    this.updateGaugeInventory();
+
     if (boostCharge > 0) {
       this.committedGauge = Math.min(
         this.configuration.driftMaxGauge,
         this.committedGauge +
           boostCharge * this.configuration.driftMaxGauge * partialStep,
       );
+      this.updateGaugeInventory();
     }
 
     if (!throttleDown && this.boostKind === "drift") this.endBoost();
     if (grounded) this.updateDriftState(driftChord, driftEdge, steerTarget, partialStep);
-    if (this.forwardSpeed < this.configuration.driftStopSpeed) {
+    if (Math.hypot(this.forwardSpeed, this.lateralVelocity) <
+        this.configuration.driftStopSpeed) {
       this.miniBoostWindowUntil = -Infinity;
     }
 
@@ -687,12 +737,11 @@ export class KartVehicle {
 
     if (
       boostEdge &&
+      throttleDown &&
       (this.boostKind === "none" || this.boostKind === "drift") &&
-      this.committedGauge + this.pendingGauge >=
-        this.configuration.driftMaxGauge
+      this.n2oChargesValue > 0
     ) {
-      this.committedGauge = 0;
-      this.pendingGauge = 0;
+      this.n2oChargesValue--;
       this.nitroCount++;
       this.beginBoost("nitro", this.configuration.boostDuration);
     } else if (throttleEdge && this.boostKind === "none" &&
@@ -720,7 +769,7 @@ export class KartVehicle {
     const travelDirection = this.forwardSpeed < 0 ? -1 : 1;
     const tireForce = spec.tireStiffness * spec.tireGrip * gripMultiplier * Math.min(speed, 1);
     // Releasing a short Shift tap restores rear grip and ends the entry torque.
-    const trigger = this.driftPhaseValue === "trigger" && driftChord && steerTarget * this.driftDirection > 0;
+    const trigger = this.driftPhaseValue === "trigger";
     const active = this.driftPhaseValue === "active";
     const sliding = speed > 15 && Math.abs(this.lateralVelocity) > 1.2 * forwardMagnitude;
 
@@ -731,21 +780,42 @@ export class KartVehicle {
     let frontForce: number;
     let rearForce: number;
     if (trigger) {
-      // Only the front axle generates lateral force during ignition.
-      frontForce = tireForce * spec.driftTriggerFactor * this.driftDirection;
+      // Official drift ignition: only the front axle generates a steering-
+      // proportional lateral force; the rear axle and tire friction are off.
+      const triggerAngle = steerTarget * spec.maxSteerDeg * Math.PI / 180 *
+        spec.driftTriggerAngleScale;
+      frontForce = tireForce * spec.driftTriggerFactor * triggerAngle;
       rearForce = 0;
     } else {
-      let axleGrip = 1;
+      let frontGrip = 1;
+      let rearGrip = 1;
       if (active) {
         this.tireEnvelope += (1 - this.tireEnvelope) *
           (1 - Math.exp(-partialStep / spec.tireResponseTime));
-        axleGrip = spec.driftSlipFactor * this.tireEnvelope;
+        const driftGrip = spec.driftSlipFactor * spec.driftGripScale *
+          this.tireEnvelope;
+        frontGrip = driftGrip;
+        rearGrip = driftGrip;
       } else if (this.driftPhaseValue === "decay") {
-        const releasedGrip = this.tireEnvelope * spec.driftSlipFactor;
-        axleGrip = releasedGrip + (1 - releasedGrip) * recovery;
+        const releasedGrip = this.tireEnvelope * spec.driftSlipFactor *
+          spec.driftGripScale;
+        frontGrip = releasedGrip + (1 - releasedGrip) * recovery;
+        rearGrip = releasedGrip + (1 - releasedGrip) * recovery;
+        frontGrip *= spec.driftRecoveryGripFactor;
+        rearGrip *= spec.driftRecoveryGripFactor;
       }
-      frontForce = tireForce * axleGrip * (steerAngle * travelDirection - lateralRatio - axleRatio);
-      rearForce = tireForce * axleGrip * (-lateralRatio + axleRatio);
+      const frontSlip = clamp(
+        steerAngle * travelDirection - lateralRatio - axleRatio,
+        -spec.tireSlipSaturation,
+        spec.tireSlipSaturation,
+      );
+      const rearSlip = clamp(
+        -lateralRatio + axleRatio,
+        -spec.tireSlipSaturation,
+        spec.tireSlipSaturation,
+      );
+      frontForce = tireForce * frontGrip * frontSlip;
+      rearForce = tireForce * rearGrip * rearSlip;
       if (active && sliding) {
         // Progressive rear bite keeps a sustained handbrake turn recoverable
         // at the reference's 1.2 lateral/forward breakaway threshold.
@@ -768,23 +838,27 @@ export class KartVehicle {
     // Drag uses the world velocity magnitude and acts along both components.
     const drag = spec.airFriction + speed * spec.dragFactor * dragMultiplier;
     const sideForce = frontForce + rearForce;
-    if (!trigger && !active) {
-      forwardForce -= travelDirection * spec.cornerDrawFactor * Math.abs(sideForce) * recovery;
+    const driftScrub = this.driftPhaseValue !== "none" && this.forwardSpeed > 15 &&
+      this.elapsedSeconds - this.driftStartSeconds < spec.driftDragDuration;
+    if (this.driftPhaseValue === "none") {
+      forwardForce -= travelDirection * spec.cornerDrawFactor *
+        Math.abs(speed * this.yawRate) * spec.mass;
+    }
+    if (driftScrub) {
+      forwardForce -= travelDirection * spec.driftSlipDrag *
+        Math.abs(this.lateralVelocity) * spec.mass;
     }
     this.forwardSpeed += (forwardForce - this.forwardSpeed * drag) / spec.mass * partialStep;
     this.lateralVelocity += (sideForce - this.lateralVelocity * drag) / spec.mass * partialStep;
-    const yawInertia = spec.mass * spec.yawInertiaPerMass;
+    const driftYawScale = this.driftPhaseValue === "none"
+      ? 1
+      : spec.driftYawInertiaFactor;
+    const yawInertia = spec.mass * spec.yawInertiaPerMass * driftYawScale;
     const yawTorque = spec.halfWheelbase * (frontForce - rearForce) - spec.airFriction * this.yawRate;
     this.yawRate += yawTorque / yawInertia * partialStep;
-    if (this.driftPhaseValue === "trigger" && !trigger && steerTarget * this.driftDirection < 0) {
-      // Opposite lock with the handbrake released arrests the entry yaw.
-      this.yawRate *= Math.exp(-spec.straightYawDamping * gripMultiplier * partialStep);
-    } else if (this.driftPhaseValue === "none") {
-      // Flat-ground self-alignment after the slip window closes. Centered
-      // wheels settle promptly when the driver lets go of the direction key.
-      const damping = spec.straightYawDamping +
-        (spec.yawDamping - spec.straightYawDamping) * Math.abs(steerTarget);
-      this.yawRate *= Math.exp(-damping * gripMultiplier * partialStep);
+    if (this.driftPhaseValue !== "none" &&
+        this.elapsedSeconds - this.driftStartSeconds >= spec.driftSettleTime) {
+      this.yawRate *= Math.exp(-spec.driftSettleYawDamping * partialStep);
     }
     if (grounded && speed < 0.15 && throttle === 0 && brake === 0) {
       this.forwardSpeed = 0;
@@ -817,12 +891,12 @@ export class KartVehicle {
       (forwardZ * this.forwardSpeed + rightZ * this.lateralVelocity) *
       partialStep;
 
-    if (grounded && (active || this.driftPhaseValue === "decay" ||
-        (this.driftPhaseValue === "trigger" && !trigger))) {
+    if (grounded && (active || this.driftPhaseValue === "decay")) {
       this.fillDriftGauge(
         driftGaugeMultiplier * tireContact,
         partialStep,
       );
+      this.updateGaugeInventory();
     }
 
     this.updateRoute(steerTarget);
@@ -867,25 +941,26 @@ export class KartVehicle {
     steerTarget: number,
     deltaSeconds: number,
   ): void {
-    if (this.driftPhaseValue !== "none" && this.forwardSpeed < this.configuration.driftStopSpeed) {
+    const planarSpeed = Math.hypot(this.forwardSpeed, this.lateralVelocity);
+    if (this.driftPhaseValue !== "none" && planarSpeed < this.configuration.driftStopSpeed) {
       this.finishDrift();
     }
-    const regripped = -this.lateralVelocity * this.driftDirection <= 0.12 * this.forwardSpeed;
-    const canLink = this.driftPhaseValue === "decay" && this.driftTimer <= 0;
-    if (driftEdge && this.forwardSpeed >= this.configuration.driftStopSpeed &&
+    const regripped = -this.lateralVelocity * this.driftDirection <= 0.10 * this.forwardSpeed;
+    const canLink = this.driftPhaseValue === "decay";
+    if (driftEdge && planarSpeed >= this.configuration.driftStopSpeed &&
       (this.driftPhaseValue === "none" || canLink)) {
       if (canLink && regripped) this.completeDrift();
       else this.finishDrift();
       this.driftPhaseValue = "trigger";
       this.driftDirection = Math.sign(steerTarget);
       this.driftTimer = this.configuration.driftTrigTime;
+      this.driftStartSeconds = this.elapsedSeconds;
       this.tireEnvelope = 0;
     }
-    const holdingDirection = driftHeld && steerTarget * this.driftDirection > 0;
     if (this.driftPhaseValue === "trigger") {
       this.driftTimer -= deltaSeconds;
       if (this.driftTimer <= 0) {
-        if (holdingDirection) {
+        if (driftHeld) {
           this.driftPhaseValue = "active";
           this.driftTimer = 0;
         } else if (regripped) {
@@ -895,7 +970,7 @@ export class KartVehicle {
           this.beginDriftRecovery();
         }
       }
-    } else if (this.driftPhaseValue === "active" && !holdingDirection) {
+    } else if (this.driftPhaseValue === "active" && !driftHeld) {
       this.beginDriftRecovery();
     } else if (this.driftPhaseValue === "decay") {
       this.driftTimer -= deltaSeconds;
@@ -919,11 +994,13 @@ export class KartVehicle {
     this.driftDirection = 0;
     this.driftTimer = 0;
     this.driftGaugeElapsed = 0;
+    this.driftStartSeconds = -Infinity;
     this.committedGauge = Math.min(
       this.configuration.driftMaxGauge,
       this.committedGauge + this.pendingGauge,
     );
     this.pendingGauge = 0;
+    this.updateGaugeInventory();
   }
 
   private fillDriftGauge(
@@ -946,6 +1023,19 @@ export class KartVehicle {
       this.configuration.driftMaxGauge - this.committedGauge,
       this.pendingGauge + charge,
     );
+  }
+
+  private updateGaugeInventory(): void {
+    if (
+      this.n2oChargesValue >= this.configuration.n2oCapacity ||
+      this.committedGauge + this.pendingGauge <
+        this.configuration.driftMaxGauge
+    ) {
+      return;
+    }
+    this.n2oChargesValue++;
+    this.committedGauge = 0;
+    this.pendingGauge = 0;
   }
 
   private updateRoute(steer: number): void {

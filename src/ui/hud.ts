@@ -35,6 +35,23 @@ function raceClock(milliseconds: number) {
     .map((part) => String(part).padStart(2, "0")).join(":");
 }
 
+function artTimeMarkup(text: string) {
+  return Array.from(text, (character) => {
+    if (character >= "0" && character <= "9") {
+      return `<i data-glyph="${character.charCodeAt(0) - 48}"></i>`;
+    }
+    if (character === ":") return '<i data-glyph="10"></i>';
+    if (character === ".") return '<i class="is-dot"></i>';
+    return `<span class="art-time-mark">${character}</span>`;
+  }).join("");
+}
+
+function setArtTime(element: HTMLElement | null, text: string) {
+  if (!element || element.dataset.value === text) return;
+  element.innerHTML = artTimeMarkup(text);
+  element.dataset.value = text;
+}
+
 export class Hud {
   private root: HTMLElement;
   private actions: HudActions;
@@ -49,16 +66,6 @@ export class Hud {
     this.root = root;
     this.actions = actions;
     this.mount();
-    void localRaceAsset("item-slot.png").then((url) => {
-      if (!url) return;
-      const image = new Image();
-      image.addEventListener("load", () => {
-        const slots = this.query<HTMLElement>(".race-slots");
-        slots?.style.setProperty("--slot-art", `url("${url}")`);
-        slots?.classList.add("has-slot-art");
-      }, { once: true });
-      image.src = url;
-    });
     void localRaceAsset("minimap-arrow.png").then((url) => {
       const image = this.query<SVGImageElement>("[data-map-arrow-art]");
       if (!image || !url) return;
@@ -74,8 +81,9 @@ export class Hud {
   private mount() {
     this.root.innerHTML = `
       <section class="hud race-hud is-hidden" aria-label="比赛信息">
-        <div class="race-slots" aria-label="道具栏">
-          <i class="race-slot"></i><span class="race-slot race-slot-current" data-item-slot role="img" aria-label="空道具栏"><span class="race-nitro-item" aria-hidden="true">N₂O<img alt="" data-nitro-item-art></span></span>
+        <div class="race-slots" aria-label="氮气道具栏">
+          <span class="race-slot race-slot-reserve" data-item-slot="1" role="img" aria-label="空道具栏"><img data-slot-art="1" src="/assets/ui/race/item6.png" alt="" hidden></span>
+          <span class="race-slot race-slot-current" data-item-slot="0" role="img" aria-label="空道具栏"><img data-slot-art="0" src="/assets/ui/race/item6.png" alt="" hidden></span>
         </div>
         <div class="race-item-tip" data-item-tip hidden><b aria-hidden="true">!</b><span>漂移集气，充满后按 Ctrl 加速</span><small>漂移集气，充满后点按氮气</small></div>
         <div class="race-standing" aria-label="当前排名，第 1 名，共 1 人">
@@ -85,8 +93,8 @@ export class Hud {
 
         <div class="race-score">
           <div class="race-lap" aria-label="圈数"><b data-lap>1</b><small>/<span data-total-laps>2</span></small></div>
-          <div class="race-clock"><span>比赛时间</span><strong data-race-time>00:00:00</strong></div>
-          <div class="race-clock"><span>最佳单圈</span><strong data-best-lap>--:--.---</strong></div>
+          <div class="race-clock"><img src="/assets/ui/race/laptime_time.png" width="84" height="22" alt="比赛时间"><strong data-race-time class="race-art-time"></strong></div>
+          <div class="race-clock"><img src="/assets/ui/race/laptime_best.png" width="84" height="22" alt="最佳单圈"><strong data-best-lap class="race-art-time"></strong></div>
         </div>
         <div class="race-map" data-race-map>
           <div class="race-map-window">
@@ -122,8 +130,10 @@ export class Hud {
           <div class="race-notice" data-race-notice></div>
         </div>
         <div class="race-instruments">
-          <div class="race-nitro" data-nitro-shell role="meter" aria-label="氮气" aria-valuemin="0" aria-valuemax="100">
-            <div data-nitro-fill></div>
+          <div class="race-nitro" data-nitro-shell role="meter" aria-label="氮气" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="race-nitro-fill" data-nitro-fill></div>
+            <div class="race-nitro-marker" data-nitro-marker></div>
+            <div class="race-nitro-full" data-nitro-full></div>
           </div>
           <div class="race-tacho" data-tacho>
             <img class="race-impact" src="/assets/ui/tacho_v1_crushBG_2.png" alt="">
@@ -187,10 +197,10 @@ export class Hud {
         <section class="modal-card result-card" role="dialog" aria-modal="true" aria-label="比赛结果">
           <h2 class="window-title">计时赛成绩</h2>
           <h3 data-result-name></h3>
-          <div class="result-time" data-result-time>00:00.000</div>
+          <div class="result-time race-art-time" data-result-time></div>
           <div class="record-badge is-hidden" data-record-badge>新纪录</div>
           <div class="result-stats">
-            <div><span>最快圈</span><strong data-result-best-lap>00:00.000</strong></div>
+            <div><img src="/assets/ui/race/laptime_lap.png" width="80" height="22" alt="全场最佳"><strong data-result-best-lap class="race-art-time"></strong></div>
             <div><span>上次最佳</span><strong data-result-previous>--:--.---</strong></div>
           </div>
           <div class="lap-list" data-result-laps></div>
@@ -235,7 +245,7 @@ export class Hud {
     this.lastSpeed = -1;
     this.setSpeed(0);
     this.clearImpact();
-    this.setGauge(0, false);
+    this.setGauge(0, 0);
     this.setDrift(false, 0);
     this.setBoost(false);
     this.setWrongWay(false);
@@ -255,12 +265,15 @@ export class Hud {
   }
 
   setTime(milliseconds: number, racing = true) {
-    this.setText("[data-race-time]", raceClock(milliseconds));
+    setArtTime(this.query("[data-race-time]"), raceClock(milliseconds));
     this.query("[data-item-tip]")?.toggleAttribute("hidden", !(racing && milliseconds > 0 && milliseconds < 8000));
   }
 
   setBestLap(milliseconds: number | null) {
-    this.setText("[data-best-lap]", milliseconds === null ? "--:--.---" : raceClock(milliseconds));
+    setArtTime(
+      this.query("[data-best-lap]"),
+      milliseconds === null ? raceClock(0) : raceClock(milliseconds),
+    );
   }
 
   setRaceCounts(collisions: number, boosts: number) {
@@ -291,24 +304,27 @@ export class Hud {
     });
   }
 
-  setGauge(ratio: number, ready: boolean) {
+  setGauge(ratio: number, charges: number) {
     const shell = this.query("[data-nitro-shell]");
     const fill = this.query<HTMLElement>("[data-nitro-fill]");
-    if (fill) {
-      const percent = Math.round(Math.max(0, Math.min(1, ratio)) * 100);
-      fill.style.clipPath = `inset(0 ${100 - percent}% 0 0)`;
-      shell?.setAttribute("aria-valuenow", String(percent));
+    const clamped = Math.max(0, Math.min(1, ratio));
+    const percent = Math.round(clamped * 100);
+    if (fill) fill.style.width = `${(clamped * 146).toFixed(2)}em`;
+    const marker = this.query<HTMLElement>("[data-nitro-marker]");
+    if (marker) {
+      marker.style.left = `${(44 + clamped * 146 - 4).toFixed(2)}em`;
+      marker.style.opacity = clamped > 0.001 ? "1" : "0";
     }
-    shell?.classList.toggle("is-ready", ready);
-    const slot = this.query("[data-item-slot]");
-    slot?.classList.toggle("is-ready", ready);
-    slot?.setAttribute("aria-label", ready ? "氮气已就绪" : "空道具栏");
-    const itemArt = this.query<HTMLImageElement>("[data-nitro-item-art]");
-    if (ready && itemArt && !itemArt.hasAttribute("src")) {
-      itemArt.addEventListener("load", () => {
-        if (itemArt.naturalWidth > 0) slot?.classList.add("has-item-art");
-      }, { once: true });
-      itemArt.src = "/local-assets/nitro-ready.png";
+    shell?.setAttribute("aria-valuenow", String(percent));
+    shell?.classList.toggle("is-full", clamped >= 0.999);
+    const itemCount = Math.max(0, Math.min(2, Math.floor(charges)));
+    for (let index = 0; index < 2; index++) {
+      const slot = this.query<HTMLElement>(`[data-item-slot="${index}"]`);
+      const art = this.query<HTMLImageElement>(`[data-slot-art="${index}"]`);
+      const full = index < itemCount;
+      slot?.classList.toggle("is-ready", full);
+      slot?.setAttribute("aria-label", full ? "氮气已就绪" : "空道具栏");
+      if (art) art.hidden = !full;
     }
   }
 
@@ -373,6 +389,22 @@ export class Hud {
     this.noticeTimer = window.setTimeout(() => {
       element.classList.remove("is-visible");
     }, duration);
+  }
+
+  noticeLap(lap: number, milliseconds: number, best: boolean) {
+    const element = this.query("[data-race-notice]");
+    if (!element) return;
+    window.clearTimeout(this.noticeTimer);
+    const label = `<span class="race-notice-lap">第 ${lap} 圈</span>` +
+      (best
+        ? '<img class="race-notice-label" src="/assets/ui/race/laptime_best.png" width="84" height="22" alt="最佳单圈">'
+        : "");
+    element.innerHTML =
+      `<span class="race-notice-line">${label}<span class="race-notice-time race-art-time">${artTimeMarkup(raceClock(milliseconds))}</span></span>`;
+    element.className = "race-notice is-visible good";
+    this.noticeTimer = window.setTimeout(() => {
+      element.classList.remove("is-visible");
+    }, 2200);
   }
 
   showCountdown(signal: (typeof GRID_SIGNALS)[number]) {
@@ -448,15 +480,15 @@ export class Hud {
     this.query(".hud")?.setAttribute("inert", "");
     this.query('[data-result-overlay] [data-modal-action="restart"]')?.focus();
     this.setText("[data-result-name]", result.trackName);
-    this.setText("[data-result-time]", formatTime(result.totalTime));
-    this.setText("[data-result-best-lap]", formatTime(result.bestLap));
+    setArtTime(this.query("[data-result-time]"), formatTime(result.totalTime));
+    setArtTime(this.query("[data-result-best-lap]"), formatTime(result.bestLap));
     this.setText("[data-result-previous]", formatTime(result.previousBest));
     const lapList = this.query<HTMLElement>("[data-result-laps]");
     if (lapList) {
       lapList.innerHTML = result.laps
         .map(
           (time, index) =>
-            `<div class="lap-row"><span>第 ${index + 1} 圈</span><strong>${formatTime(time)}</strong></div>`,
+            `<div class="lap-row"><span>第 ${index + 1} 圈</span><strong class="race-art-time">${artTimeMarkup(formatTime(time))}</strong></div>`,
         )
         .join("");
     }

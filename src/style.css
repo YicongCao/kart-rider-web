@@ -371,9 +371,33 @@ kbd {
 
 .result-time {
   color: #195696;
-  font-size: clamp(28px, 6vw, 46px);
-  line-height: 1.3;
-  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.result-time.race-art-time {
+  --glyph-width: clamp(18px, 4vw, 30px);
+  --glyph-height: calc(var(--glyph-width) * 1.22);
+}
+
+.result-stats .race-art-time {
+  --glyph-width: 10px;
+  --glyph-height: 12px;
+}
+
+.result-stats img {
+  display: block;
+  width: auto;
+  height: 15px;
+}
+
+.lap-row .race-art-time {
+  --glyph-width: 10px;
+  --glyph-height: 12px;
+}
+
+.result-card .race-art-time i,
+.result-card .result-stats img {
+  filter: brightness(0) opacity(.82);
 }
 
 .record-badge {
