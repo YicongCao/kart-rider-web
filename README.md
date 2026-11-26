@@ -18,6 +18,14 @@ npm run build
 npm run preview
 ```
 
+Before delivering changes, run the full acceptance gate:
+
+```bash
+npm run verify
+```
+
+This includes the grip-only full-lap test in `tests/grip-lap.spec.ts`.
+
 The game expects converted assets under `public/assets/`. They are not downloaded automatically.
 
 ## Controls

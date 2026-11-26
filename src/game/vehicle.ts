@@ -102,8 +102,16 @@ export interface VehicleTuning {
   /** Peak tire slip angle before the lateral force saturates, in radians. */
   tireSlipSaturation: number;
   halfWheelbase: number;
-  /** Planar moment of inertia divided by mass, in square metres. */
+  /** Drift-phase planar moment of inertia divided by mass, in square metres. */
   yawInertiaPerMass: number;
+  /** Steering input lag for the non-drift bicycle model, in seconds. */
+  gripSteeringResponseTime: number;
+  /** Yaw-rate response for the non-drift bicycle model, in seconds. */
+  gripYawResponseTime: number;
+  /** Peak planar acceleration the non-drift tire model may request. */
+  gripLateralAccelLimit: number;
+  /** Per-second damping of body sideslip while driving with grip. */
+  gripLateralDamping: number;
   cornerDrawFactor: number;
   driftTrigTime: number;
   driftDecayTime: number;
@@ -166,6 +174,10 @@ export const DEFAULT_TUNING: VehicleTuning = {
   tireSlipSaturation: 0.1,
   halfWheelbase: 0.65,
   yawInertiaPerMass: 1 / 12,
+  gripSteeringResponseTime: 0.1,
+  gripYawResponseTime: 0.09,
+  gripLateralAccelLimit: 9.8,
+  gripLateralDamping: 7,
   cornerDrawFactor: 0.18,
   driftTrigTime: 0.2,
   driftDecayTime: 0.4,
@@ -179,8 +191,8 @@ export const DEFAULT_TUNING: VehicleTuning = {
   driftDragDuration: 1.2,
   driftSettleYawDamping: 6,
   driftSettleTime: 1.8,
-  // The H5 yaw inertia is mass/12 for grip physics. Keeping the Web drift
-  // feel needs a larger effective inertia than the rigid-body value.
+  // The H5 yaw inertia is mass/12. Grip handling uses the response-limited
+  // bicycle model below; the drift branch keeps a larger effective inertia.
   driftYawInertiaFactor: 10.44,
   // Trigger force is front-only and proportional to the raw 10 deg steering
   // angle. The 3.6 scale replaces the missing triggerRawSteer detail.
@@ -442,6 +454,7 @@ export class KartVehicle {
   private forwardSpeed: number;
   private lateralVelocity: number;
   private yawRate: number;
+  private gripSteerAngle = 0;
   private tireEnvelope = 0;
   private driftPhaseValue: DriftPhase;
   private driftDirection: number;
@@ -625,6 +638,7 @@ export class KartVehicle {
     this.forwardSpeed = finiteOr(speed, 0);
     this.lateralVelocity = 0;
     this.yawRate = 0;
+    this.gripSteerAngle = 0;
     this.accumulatorSeconds = 0;
     this.routeSample = null;
     this.previousRouteProgress = this.routeProgress;
@@ -769,6 +783,7 @@ export class KartVehicle {
     const travelDirection = this.forwardSpeed < 0 ? -1 : 1;
     const tireForce = spec.tireStiffness * spec.tireGrip * gripMultiplier * Math.min(speed, 1);
     // Releasing a short Shift tap restores rear grip and ends the entry torque.
+    const gripMode = this.driftPhaseValue === "none";
     const trigger = this.driftPhaseValue === "trigger";
     const active = this.driftPhaseValue === "active";
     const sliding = speed > 15 && Math.abs(this.lateralVelocity) > 1.2 * forwardMagnitude;
@@ -779,7 +794,15 @@ export class KartVehicle {
       : 1;
     let frontForce: number;
     let rearForce: number;
-    if (trigger) {
+    const targetGripAngle = steerTarget * spec.maxSteerDeg * Math.PI / 180 *
+      Math.exp(-forwardMagnitude / spec.steerConstraint *
+        spec.steeringExponentialScale);
+    this.gripSteerAngle += (targetGripAngle - this.gripSteerAngle) *
+      (1 - Math.exp(-partialStep / spec.gripSteeringResponseTime));
+    if (gripMode) {
+      frontForce = 0;
+      rearForce = 0;
+    } else if (trigger) {
       // Official drift ignition: only the front axle generates a steering-
       // proportional lateral force; the rear axle and tire friction are off.
       const triggerAngle = steerTarget * spec.maxSteerDeg * Math.PI / 180 *
@@ -850,12 +873,26 @@ export class KartVehicle {
     }
     this.forwardSpeed += (forwardForce - this.forwardSpeed * drag) / spec.mass * partialStep;
     this.lateralVelocity += (sideForce - this.lateralVelocity * drag) / spec.mass * partialStep;
-    const driftYawScale = this.driftPhaseValue === "none"
-      ? 1
-      : spec.driftYawInertiaFactor;
-    const yawInertia = spec.mass * spec.yawInertiaPerMass * driftYawScale;
-    const yawTorque = spec.halfWheelbase * (frontForce - rearForce) - spec.airFriction * this.yawRate;
-    this.yawRate += yawTorque / yawInertia * partialStep;
+    if (gripMode && grounded) {
+      const gripAuthority = Math.max(0, Math.min(1, tireContact));
+      const desiredYawRate = this.forwardSpeed /
+        (spec.halfWheelbase * 2) * Math.tan(this.gripSteerAngle);
+      const yawLimit = spec.gripLateralAccelLimit * gripMultiplier /
+        Math.max(1, Math.abs(this.forwardSpeed));
+      const targetYawRate = clamp(desiredYawRate, -yawLimit, yawLimit);
+      this.yawRate += (targetYawRate - this.yawRate) *
+        (1 - Math.exp(-partialStep / spec.gripYawResponseTime)) *
+        gripAuthority;
+      this.lateralVelocity *= Math.exp(
+        -spec.gripLateralDamping * gripMultiplier * gripAuthority * partialStep,
+      );
+    } else {
+      const yawInertia = spec.mass * spec.yawInertiaPerMass *
+        spec.driftYawInertiaFactor;
+      const yawTorque = spec.halfWheelbase * (frontForce - rearForce) -
+        spec.airFriction * this.yawRate;
+      this.yawRate += yawTorque / yawInertia * partialStep;
+    }
     if (this.driftPhaseValue !== "none" &&
         this.elapsedSeconds - this.driftStartSeconds >= spec.driftSettleTime) {
       this.yawRate *= Math.exp(-spec.driftSettleYawDamping * partialStep);

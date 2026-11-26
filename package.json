@@ -8,7 +8,9 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:grip": "playwright test tests/grip-lap.spec.ts",
+    "verify": "tsc --noEmit && playwright test --reporter=line && vite build"
   },
   "keywords": [],
   "dependencies": {
