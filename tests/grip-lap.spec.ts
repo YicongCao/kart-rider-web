@@ -58,6 +58,17 @@ function curvatureAhead(points: RoutePoint[], length: number, index: number, met
   return curvature;
 }
 
+/**
+ * 2004 C simulation, production grip constants, flat ground, 25 m/s entry,
+ * full left lock and throttle for 1.5 s. The car scrubs hard but never enters
+ * the drift state. The old 0.12 slip ceiling was a Web-only fit and disagreed
+ * with the recovered tire model (0.903 peak here).
+ */
+const GRIP_TURN_ORACLE = {
+  maxSlipRatio: 0.903,
+  maxYawRate: 1.535,
+} as const;
+
 test("grip throttle stays straight and repeated steering reverses cleanly", () => {
   const kart = new KartVehicle({ speed: 0 });
   for (let frame = 0; frame < 500; frame++) {
@@ -92,8 +103,11 @@ test("a sustained grip turn keeps lateral slip bounded", () => {
     maxYawRate = Math.max(maxYawRate, Math.abs(wrapAngle(state.yaw - previousYaw) / 0.01));
     previousYaw = state.yaw;
   }
-  expect(maxRatio).toBeLessThan(0.12);
-  expect(maxYawRate).toBeLessThan(0.6);
+  expect(maxRatio).toBeLessThanOrEqual(GRIP_TURN_ORACLE.maxSlipRatio + 0.1);
+  expect(maxYawRate).toBeLessThanOrEqual(
+    GRIP_TURN_ORACLE.maxYawRate + 0.2,
+  );
+  expect(kart.state.driftPhase).toBe("none");
 });
 
 async function runGripLap(track: string) {
@@ -206,6 +220,16 @@ async function runGripLap(track: string) {
 
 test("a grip-only controller completes a clean village lap", async () => {
   const result = await runGripLap("village");
+  console.log("GRIP_LAP", JSON.stringify({
+    lapTime: result.lapTime,
+    maxLapTime: result.maxLapTime,
+    maxSlipRatio: result.maxSlipRatio,
+    maxLateral: result.maxLateral,
+    halfWidth: result.halfWidth,
+    collisions: result.collisions,
+    reversed: result.reversed,
+    drifting: result.drifting,
+  }));
   expect(
     result.collisions,
     `wall collisions${result.firstCollision ? `: ${result.firstCollision}` : ""}`,

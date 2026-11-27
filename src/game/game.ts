@@ -546,20 +546,27 @@ export class Game {
       this.updateChaseCamera(0, state, true);
       return;
     }
-    // The grid shot descends in front of the driver, then cuts directly to the chase camera.
-    const descent = MathUtils.smootherstep(progress, 0, 0.78);
-    const push = MathUtils.smootherstep(progress, 0.18, 0.96);
-    const arc = Math.sin(Math.PI * progress);
-    const angle = state.yaw + Math.PI - 0.32 * arc;
+    // P3563 time trial frames 08–11 descend from above the nose, pass to
+    // one side, hold a head-on close-up, then cut to the countdown chase view.
+    const descent = MathUtils.smoothstep(progress, 0, 0.62);
+    const push = MathUtils.smootherstep(progress, 0.24, 0.78);
+    const arc = Math.sin(Math.PI * Math.min(progress / 0.78, 1));
     const aspect = this.world.camera.aspect;
     const fov = MathUtils.lerp(43, 37.5, push);
-    // Preserve the close-up's horizontal framing on portrait screens.
     const framing = Math.max(1, 0.68 / aspect);
-    const portraitFov = MathUtils.radToDeg(2 * Math.atan(Math.tan(MathUtils.degToRad(fov / 2)) * framing));
+    const portraitFov = MathUtils.radToDeg(
+      2 * Math.atan(Math.tan(MathUtils.degToRad(fov / 2)) * framing),
+    );
     this.placeCamera(
-      state, angle, MathUtils.lerp(6.5, 4.4, push), MathUtils.lerp(7.1, 1.65, descent),
-      state.yaw, 0, portraitFov, MathUtils.lerp(0.85, 0.73, descent),
-      0.88 * arc * MathUtils.smoothstep(aspect, 0.6, 1.4),
+      state,
+      state.yaw + Math.PI - 0.32 * arc,
+      MathUtils.lerp(6.5, 4.4, push),
+      MathUtils.lerp(7.1, 1.65, descent),
+      state.yaw,
+      0,
+      portraitFov,
+      MathUtils.lerp(0.85, 0.73, descent),
+      0.66 * arc * MathUtils.smoothstep(aspect, 0.6, 1.4),
     );
   }
 

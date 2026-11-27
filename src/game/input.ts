@@ -2,6 +2,49 @@ import type { KartInput } from "../types";
 
 type GameAction = "pause" | "reset" | "mute" | "confirm";
 
+type SteeringDirection = -1 | 0 | 1;
+
+/**
+ * Original input arbitration: the most recent left/right press owns steering.
+ * Releasing an older direction while the newer one remains held must not
+ * cancel the newer direction.
+ */
+export class SteeringOwnership {
+  private owner: SteeringDirection = 0;
+  private sequence = 0;
+  private readonly held = new Map<
+    string,
+    { direction: Exclude<SteeringDirection, 0>; sequence: number }
+  >();
+
+  get steer(): SteeringDirection {
+    return this.owner;
+  }
+
+  press(source: string, direction: Exclude<SteeringDirection, 0>): void {
+    this.held.set(source, { direction, sequence: ++this.sequence });
+    this.owner = direction;
+  }
+
+  release(source: string): void {
+    if (!this.held.has(source)) return;
+    this.held.delete(source);
+
+    let latest: { direction: Exclude<SteeringDirection, 0>; sequence: number } | undefined;
+    for (const held of this.held.values()) {
+      if (latest === undefined || held.sequence > latest.sequence) {
+        latest = held;
+      }
+    }
+    this.owner = latest?.direction ?? 0;
+  }
+
+  clear(): void {
+    this.held.clear();
+    this.owner = 0;
+  }
+}
+
 const BLOCKED_KEYS = new Set([
   "ArrowUp",
   "ArrowDown",
@@ -14,6 +57,7 @@ const BLOCKED_KEYS = new Set([
 
 export class InputController {
   private pressed = new Set<string>();
+  private steering = new SteeringOwnership();
   private touch = {
     throttle: false,
     brake: false,
@@ -56,8 +100,6 @@ export class InputController {
   }
 
   snapshot(): KartInput {
-    const left = this.pressed.has("KeyA") || this.pressed.has("ArrowLeft") || this.touch.left;
-    const right = this.pressed.has("KeyD") || this.pressed.has("ArrowRight") || this.touch.right;
     return {
       throttle:
         this.pressed.has("KeyW") ||
@@ -67,7 +109,7 @@ export class InputController {
         this.pressed.has("KeyS") ||
         this.pressed.has("ArrowDown") ||
         this.touch.brake,
-      steer: (right ? 1 : 0) - (left ? 1 : 0),
+      steer: this.steering.steer,
       drift:
         this.pressed.has("ShiftLeft") ||
         this.pressed.has("ShiftRight") ||
@@ -117,6 +159,7 @@ export class InputController {
 
   releaseAll = () => {
     this.pressed.clear();
+    this.steering.clear();
     this.touch = {
       throttle: false,
       brake: false,
@@ -149,6 +192,11 @@ export class InputController {
     }
     if (!this.pressed.has(event.code)) {
       this.pressed.add(event.code);
+      if (event.code === "KeyA" || event.code === "ArrowLeft") {
+        this.steering.press(event.code, -1);
+      } else if (event.code === "KeyD" || event.code === "ArrowRight") {
+        this.steering.press(event.code, 1);
+      }
       this.recordChange();
     }
 
@@ -167,12 +215,24 @@ export class InputController {
   };
 
   private onKeyUp = (event: KeyboardEvent) => {
-    if (this.pressed.delete(event.code)) this.recordChange();
+    if (this.pressed.delete(event.code)) {
+      this.steering.release(event.code);
+      this.recordChange();
+    }
   };
 
   private setTouch(control: string, down: boolean) {
     if (control in this.touch) {
-      this.touch[control as keyof typeof this.touch] = down;
+      const key = control as keyof typeof this.touch;
+      if (this.touch[key] === down) return;
+      if (control === "left") {
+        if (down) this.steering.press("touch:left", -1);
+        else this.steering.release("touch:left");
+      } else if (control === "right") {
+        if (down) this.steering.press("touch:right", 1);
+        else this.steering.release("touch:right");
+      }
+      this.touch[key] = down;
       this.recordChange();
     }
   }

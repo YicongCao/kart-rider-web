@@ -4,6 +4,7 @@ import {
   compareWebDriftEpisodes,
   loadDriftReference,
   measureDriftEntryWindows,
+  measureEffectEpisodes,
   summarizeWebEpisodes,
   type DriftReference,
   type WebDriftEpisode,
@@ -411,6 +412,45 @@ test("entry-window measurement uses the reference duration and preserves slip", 
   expect(window.speedRetention).toBeCloseTo(1, 3);
 });
 
+test("entry-window measurement starts at the active drift phase", () => {
+  const samples: DriftTelemetrySample[] = [];
+  const dt = 0.01;
+  const slip = 50 * Math.PI / 180;
+  let yaw = 0;
+  for (let index = 0; index <= 200; index++) {
+    const t = index * dt;
+    const active = t >= 0.2 - 1e-9;
+    samples.push({
+      t,
+      s: index * 0.15,
+      yaw,
+      speed: 15 * Math.cos(active ? slip : 0),
+      lateralSpeed: active ? -15 * Math.sin(slip) : 0,
+      drifting: true,
+      driftPhase: active ? "active" : "trigger",
+    });
+    yaw += 60 * Math.PI / 180 * dt;
+  }
+  const episode: DriftEpisode = {
+    startTime: 0,
+    endTime: 2,
+    duration: 2,
+    headingChangeDegrees: 120,
+    yawRateDegreesPerSecond: 60,
+    entrySpeed: 15,
+    exitSpeed: 15,
+    speedRetention: 1,
+    maxSideSlipDegrees: 50,
+    medianSideSlipDegrees: 50,
+  };
+
+  const [window] = measureDriftEntryWindows(samples, [episode], 1.5);
+
+  expect(window.duration).toBe(1.5);
+  expect(window.medianSideSlipDegrees).toBeCloseTo(50, 3);
+  expect(window.speedRetention).toBeCloseTo(1, 3);
+});
+
 test("entry-window measurement skips an episode shorter than the reference window", () => {
   const samples: DriftTelemetrySample[] = [
     { t: 0, s: 0, yaw: 0, speed: 15, lateralSpeed: 0, drifting: true },
@@ -483,4 +523,23 @@ test("episode summaries report percentiles for measured Web data", () => {
   expect(summary.speedRetention.median).toBe(1);
   expect(summary.yawRateDegreesPerSecond.median).toBe(50);
   expect(summary.medianSideSlipDegrees.median).toBe(50);
+});
+
+
+test("KSV groups include linger and one missing tick, exclude trigger and require four tick intervals", () => {
+  const method = loadDriftReference().method;
+  const samples = Array.from({ length: 151 }, (_, i) => {
+    const t = i / 100;
+    const tick = Math.floor(i / 10);
+    const driftPhase = tick < 2 ? "trigger" : [2, 3, 5, 9, 10, 15].includes(tick) ? "active"
+      : tick === 6 ? "decay" : "none";
+    return { t, x: 0, z: 12 * t, yaw: (40 + 10 * t) * Math.PI / 180, driftPhase } as const;
+  });
+  const { episodes, truncated } = measureEffectEpisodes(samples, method);
+  expect(truncated).toBe(1);
+  expect(episodes).toHaveLength(1);
+  expect(episodes[0].duration).toBe(0.4);
+  expect(episodes[0].speedRetention).toBeCloseTo(1);
+  expect(episodes[0].yawRateDegreesPerSecond).toBeCloseTo(10);
+  expect(episodes[0].medianSideSlipDegrees).toBeCloseTo(44);
 });

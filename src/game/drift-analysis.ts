@@ -29,6 +29,11 @@ export interface DriftTelemetrySample {
   /** Body-right speed, in metres per second. */
   lateralSpeed: number;
   drifting: boolean;
+  /**
+   * Vehicle drift phase when the sample was taken. KSV effect 2/3 corresponds
+   * to the Web `active` phase, not the trigger or manual key press.
+   */
+  driftPhase?: "none" | "trigger" | "active" | "decay";
 }
 
 export interface DriftEpisode {

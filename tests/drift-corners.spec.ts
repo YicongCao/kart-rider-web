@@ -1,16 +1,19 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "playwright/test";
+import { Route } from "../src/game/route";
 import {
-  DRIFT_ACCEPTANCE,
-  acceptanceDriftDriver,
+  digitalTireDriftDriver,
+  digitalTireTargetSpeed,
+  driftAcceptanceReasons,
   runTrackDrift,
+  projectNear,
   type CornerDriftRun,
 } from "./support/drift-course";
 import {
   compareWebDriftEpisodes,
   loadDriftReference,
-  measureDriftEntryWindows,
+  measureEffectEpisodes,
   summarizeWebEpisodes,
   type DriftMetricName,
   type WebDriftEpisode,
@@ -23,73 +26,6 @@ const EFFECT_METRICS: readonly DriftMetricName[] = [
   "yawRateDegreesPerSecond",
   "medianSideSlipDegrees",
 ];
-
-function acceptanceReasons(run: CornerDriftRun) {
-  const reasons = [...run.failures, ...run.analysis.failures];
-
-  if (run.coverage < DRIFT_ACCEPTANCE.minCoverage) {
-    reasons.push(
-      `coverage ${run.coverage.toFixed(2)} < ${DRIFT_ACCEPTANCE.minCoverage}`,
-    );
-  }
-  if (run.maxCoverageGap > DRIFT_ACCEPTANCE.maxCoverageGap) {
-    reasons.push(
-      `max coverage gap ${run.maxCoverageGap.toFixed(2)}s > ` +
-      `${DRIFT_ACCEPTANCE.maxCoverageGap}s`,
-    );
-  }
-  if (run.longestDriftSeconds < DRIFT_ACCEPTANCE.minDriftSeconds) {
-    reasons.push(
-      `longest drift ${run.longestDriftSeconds.toFixed(2)}s < ` +
-      `${DRIFT_ACCEPTANCE.minDriftSeconds}s`,
-    );
-  }
-  if (run.exitHeadingErrorDeg === null) {
-    reasons.push("no exit heading measurement");
-  } else if (run.exitHeadingErrorDeg > DRIFT_ACCEPTANCE.maxExitHeadingErrorDeg) {
-    reasons.push(
-      `exit heading error ${run.exitHeadingErrorDeg.toFixed(1)}deg > ` +
-      `${DRIFT_ACCEPTANCE.maxExitHeadingErrorDeg}deg`,
-    );
-  }
-  if (run.medianSideSlipDeg === null) {
-    reasons.push("no drifting side-slip samples in corner");
-  } else if (
-    run.medianSideSlipDeg < DRIFT_ACCEPTANCE.minMedianSideSlipDeg ||
-    run.medianSideSlipDeg > DRIFT_ACCEPTANCE.maxMedianSideSlipDeg
-  ) {
-    reasons.push(
-      `median side slip ${run.medianSideSlipDeg.toFixed(1)}deg outside ` +
-      `${DRIFT_ACCEPTANCE.minMedianSideSlipDeg}..` +
-      `${DRIFT_ACCEPTANCE.maxMedianSideSlipDeg}deg`,
-    );
-  }
-  if (run.driftSpeedRetention === null) {
-    reasons.push("no drift speed retention measurement");
-  } else if (
-    run.driftSpeedRetention < DRIFT_ACCEPTANCE.minSpeedRetention ||
-    run.driftSpeedRetention > DRIFT_ACCEPTANCE.maxSpeedRetention
-  ) {
-    reasons.push(
-      `speed retention ${run.driftSpeedRetention.toFixed(2)} outside ` +
-      `${DRIFT_ACCEPTANCE.minSpeedRetention}..` +
-      `${DRIFT_ACCEPTANCE.maxSpeedRetention}`,
-    );
-  }
-  if (run.driftInputStartS === null) {
-    reasons.push("drift input never started");
-  } else if (!run.driftInputStartedBeforeCorner) {
-    reasons.push(
-      `drift input started ${Math.abs(run.driftInputLeadMeters ?? 0).toFixed(1)}m ` +
-      "after the corner body",
-    );
-  }
-  if (run.driftInputActiveAtCornerStart === false) {
-    reasons.push("drift input was not active entering the corner body");
-  }
-
-  return [...new Set(reasons)];
-}
 
 function rounded(value: number | null, digits = 2) {
   return value === null ? null : Number(value.toFixed(digits));
@@ -110,7 +46,11 @@ function metricsFor(run: CornerDriftRun) {
     reverseDetail: run.reverseDetail || null,
     timedOut: run.timedOut,
     maxLateral: rounded(run.maxLateral, 2),
+    minGroundedChassisOffset: run.minGroundedChassisOffset,
     exitHeadingErrorDeg: rounded(run.exitHeadingErrorDeg, 1),
+    cornerEndHeadingErrorDeg: rounded(run.cornerEndHeadingErrorDeg, 1),
+    cornerEndBodyHeadingErrorDeg:
+      rounded(run.cornerEndBodyHeadingErrorDeg, 1),
     finalHeadingErrorDeg: rounded(run.finalHeadingErrorDeg, 1),
     coverage: rounded(run.coverage, 3),
     maxCoverageGap: rounded(run.maxCoverageGap, 3),
@@ -128,36 +68,30 @@ function metricsFor(run: CornerDriftRun) {
 }
 
 test.describe("drift corner acceptance", () => {
+  const expectedCorners = { village: 13, desert: 27, forest: 33, ice: 21 };
   for (const track of TRACKS) {
     test(`${track}: baseline drift through every real corner`, async () => {
       test.setTimeout(1_200_000);
       const startedAt = Date.now();
-      const result = await runTrackDrift(track, ({ route, routeLength }) =>
-        acceptanceDriftDriver({ route, routeLength }));
+      const result = await runTrackDrift(track, ({ route, routeLength }) => {
+        const drive = digitalTireDriftDriver({ route, routeLength });
+        return context => {
+          const input = drive(context);
+          const { throttle = 0, brake = 0, steer = 0 } = input;
+          if (![0, 1].includes(throttle) || ![0, 1].includes(brake) || ![-1, 0, 1].includes(steer)) {
+            throw new Error(`${track} corner ${context.corner.index}: non-keyboard input ${JSON.stringify(input)}`);
+          }
+          return input;
+        };
+      }, {
+        initialSpeedForCorner: (corner, route) => digitalTireTargetSpeed(corner, { route }),
+      });
       const reference = loadDriftReference();
-      const referenceWindowSeconds = reference.corpus.duration.median;
-      if (referenceWindowSeconds === null) {
-        throw new Error("drift reference has no median episode duration");
-      }
-      const rawEpisodes: WebDriftEpisode[] = [];
-      const entryWindows: WebDriftEpisode[] = [];
-      for (const run of result.runs) {
-        for (const episode of run.analysis.episodes) {
-          rawEpisodes.push({
-            duration: episode.duration,
-            speedRetention: episode.speedRetention,
-            yawRateDegreesPerSecond: episode.yawRateDegreesPerSecond,
-            medianSideSlipDegrees: episode.medianSideSlipDegrees,
-          });
-          entryWindows.push(...measureDriftEntryWindows(
-            run.samples,
-            [episode],
-            referenceWindowSeconds,
-          ));
-        }
-      }
+      const measured = result.runs.map(run => measureEffectEpisodes(run.samples, reference.method));
+      const effectEpisodes = measured.flatMap(run => run.episodes);
+      const rawEpisodes: WebDriftEpisode[] = result.runs.flatMap(run => run.analysis.episodes);
       const effectComparison = compareWebDriftEpisodes(
-        entryWindows,
+        effectEpisodes,
         reference,
         { metrics: EFFECT_METRICS },
       );
@@ -166,11 +100,11 @@ test.describe("drift corner acceptance", () => {
         (check) => !check.withinAcceptance,
       );
       const effectIqrMisses = effectComparison.checks.filter(
-        (check) => check.withinReferenceIqr === false,
+        (check) => check.withinReferenceIqr !== true,
       );
 
       const cornerReports = result.runs.map(run => {
-        const reasons = acceptanceReasons(run);
+        const reasons = driftAcceptanceReasons(run);
         return {
           index: run.corner.index,
           s: `${run.corner.start.toFixed(1)}..${run.corner.end.toFixed(1)}`,
@@ -211,15 +145,9 @@ test.describe("drift corner acceptance", () => {
           },
           protocol: {
             effectMetrics: EFFECT_METRICS,
-            windowSeconds: referenceWindowSeconds,
-            basis:
-              "first reference-duration window after each Web drift starts; " +
-              "the Web acceptance driver intentionally holds Shift through " +
-              "the full corner body plus 8 m",
-            rawDurationNote:
-              "raw Web episode duration is reported but excluded from the " +
-              "effect pass/fail because sustained-corner drift is longer " +
-              "than the KSV per-episode median by construction",
+            basis: "Complete active/linger episodes, sampled at 10 Hz using KSV position differences",
+            measuredCorners: measured.filter(run => run.episodes.length > 0).length,
+            truncatedEpisodes: measured.reduce((n, run) => n + run.truncated, 0),
           },
           effect: effectComparison,
           effectIqrMisses: effectIqrMisses.map((check) => check.metric),
@@ -252,7 +180,7 @@ test.describe("drift corner acceptance", () => {
       }));
       console.log("DRIFT_REFERENCE", JSON.stringify({
         track,
-        windows: effectComparison.episodeCount,
+        effectEpisodes: effectComparison.episodeCount,
         metrics: effectComparison.webMedians,
         reference: {
           yaw: reference.corpus.yawRate,
@@ -262,14 +190,13 @@ test.describe("drift corner acceptance", () => {
         },
         rawEpisodeDuration: rawEpisodeSummary.duration,
         rawEpisodeMedianDuration: rawEpisodeSummary.duration.median,
-        windowSeconds: referenceWindowSeconds,
       }));
 
-      expect(result.runs.length, `${track}: no corners extracted`).toBeGreaterThan(0);
-      expect(
-        entryWindows.length,
-        `${track}: missing measured drift entry windows`,
-      ).toBeGreaterThanOrEqual(result.runs.length);
+      expect(result.runs).toHaveLength(expectedCorners[track]);
+      expect(report.referenceComparison.protocol.measuredCorners,
+        `${track}: each corner must supply a complete effect episode`).toBe(result.runs.length);
+      expect(report.referenceComparison.protocol.truncatedEpisodes,
+        `${track}: effect still active at end of telemetry`).toBe(0);
       expect(
         effectBandMisses,
         `${track}: drift effect medians outside the hard acceptance bands: ` +
@@ -287,4 +214,17 @@ test.describe("drift corner acceptance", () => {
       ).toBe(0);
     });
   }
+});
+
+
+test("continuous projection stays on the approached branch and crosses the lap seam", () => {
+  const route = new Route({ length: 42, halfWidth: 2, points: [
+    { s: 0, p: [0, 0, 0], f: [0, 0, 1], u: [0, 1, 0], curvature: 0 },
+    { s: 20, p: [0, 0, 20], f: [0, 0, 1], u: [0, 1, 0], curvature: 0 },
+    { s: 21, p: [1, 0, 20], f: [0, 0, -1], u: [0, 1, 0], curvature: 0 },
+    { s: 41, p: [1, 0, 0], f: [-1, 0, 0], u: [0, 1, 0], curvature: 0 },
+  ] });
+  // The returning straight is nearer in world space but twenty metres later.
+  expect(projectNear(route, 10, 0.5, 0.8, 10.2).s).toBeCloseTo(10.2);
+  expect(projectNear(route, 41.9, 0.5, 0, 0.2).s).toBeCloseTo(0.2);
 });

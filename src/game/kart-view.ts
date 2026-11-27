@@ -6,7 +6,6 @@ import {
   CanvasTexture,
   Group,
   LinearFilter,
-  LoopOnce,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -31,8 +30,8 @@ const RIDER_CLIPS = {
   forward: "f40",
   steerLeft: "f41",
   steerRight: "f42",
-  lookBackLeft: "f46",
-  lookBackRight: "f45",
+  lookBackLeft: "f45",
+  lookBackRight: "f46",
 };
 const MAX_TRAIL_VERTICES = 4200;
 const REAR_TIRE_EDGES = [-0.76, -0.48, 0.48, 0.76];
@@ -132,43 +131,39 @@ export class KartView {
     const characterScene = this.prepareModel(character, false);
     this.model.add(kartScene);
 
-    // The seat node places the Y-up character rig in the kart.
     const rekart = kartScene.getObjectByName("ReKart");
     const riderRoot = characterScene.getObjectByName("char_root");
-    if (rekart && riderRoot) {
-      const seat = rekart.children.find((child) => child.name === "seat") ?? rekart.children[6];
-      seat.add(riderRoot);
-      this.rider = riderRoot;
-      this.mixer = new AnimationMixer(this.rider);
-      for (const name of Object.values(RIDER_CLIPS)) {
-        const clip = character.animations.find((animation) => animation.name === name);
-        if (!clip) continue;
-        const action = this.mixer.clipAction(clip);
-        if (name !== RIDER_CLIPS.forward) {
-          action.setLoop(LoopOnce, 1);
-          action.clampWhenFinished = true;
-        }
-        action.weight = name === RIDER_CLIPS.forward ? 1 : 0;
-        this.riderActions.set(name, action);
-      }
+    // Both rigs use the kart's local Z-up axes. Mounting at the seat mesh
+    // origin drops the hands 0.349 units below their intended grip.
+    const riderMount = rekart?.children.find((child) => child.name === "Relement");
+    if (!rekart || !riderMount || !riderRoot) throw new Error("Cotton1/Dao rider attachment is missing");
+    riderMount.add(riderRoot);
+    this.rider = riderRoot;
+    this.mixer = new AnimationMixer(this.rider);
+    for (const name of Object.values(RIDER_CLIPS)) {
+      const clip = character.animations.find((animation) => animation.name === name);
+      if (!clip) continue;
+      const action = this.mixer.clipAction(clip);
+      action.weight = name === RIDER_CLIPS.forward ? 1 : 0;
+      this.riderActions.set(name, action);
+    }
 
-      const handleNode = rekart.children.find((child) => child.name === "handle");
-      this.handle = (handleNode?.children[0] as Mesh | undefined) ?? null;
-      this.wheels = ["wheel0", "wheel1", "wheel2", "wheel3"].map((name) => {
-        const mount = rekart.children.find((child) => child.name === name);
-        const mesh = mount?.children[0];
-        return mount && mesh instanceof Mesh ? { mount, restHeight: mount.position.z, mesh } : null;
-      });
-      for (const mesh of [this.handle, ...this.wheels.map((wheel) => wheel?.mesh)]) {
-        if (!mesh) continue;
-        mesh.updateMatrix();
-        this.baseMatrices.set(mesh, mesh.matrix.clone());
-        mesh.matrixAutoUpdate = false;
-      }
+    const handleNode = rekart.children.find((child) => child.name === "handle");
+    this.handle = (handleNode?.children[0] as Mesh | undefined) ?? null;
+    this.wheels = ["wheel0", "wheel1", "wheel2", "wheel3"].map((name) => {
+      const mount = rekart.children.find((child) => child.name === name);
+      const mesh = mount?.children[0];
+      return mount && mesh instanceof Mesh ? { mount, restHeight: mount.position.z, mesh } : null;
+    });
+    for (const mesh of [this.handle, ...this.wheels.map((wheel) => wheel?.mesh)]) {
+      if (!mesh) continue;
+      mesh.updateMatrix();
+      this.baseMatrices.set(mesh, mesh.matrix.clone());
+      mesh.matrixAutoUpdate = false;
     }
 
     const exhaustPort = kartScene.getObjectByName("port0");
-    if (!rekart || !exhaustPort) throw new Error("Cotton1 exhaust attachment is missing");
+    if (!exhaustPort) throw new Error("Cotton1 exhaust attachment is missing");
     this.exhaust = new KartExhaust(exhaustPort, rekart, booster, wave, smoke, this.scene);
     await Promise.all([
       this.useLocalTexture("kart-shadow.png", this.shadow?.material as MeshBasicMaterial | undefined),

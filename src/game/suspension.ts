@@ -1,3 +1,7 @@
+// P3563 reports a 58.8 m/s^2 ground-support gravity, but the recovered
+// records do not include a jump. Keep the existing Web ballistic gravity for
+// airborne motion so the evidence-backed contact model does not silently
+// change the established ramp and ravine trajectories.
 const GRAVITY = 9.81;
 const CONTACT_TOLERANCE = 0.018;
 const LANDING_REACH = 0.16;
@@ -7,7 +11,7 @@ const REAR_AXLE = -0.497;
 const FRONT_HALF_TRACK = 0.460;
 const REAR_HALF_TRACK = 0.434;
 const GAP_PROBE_DISTANCE = 18;
-const WHEEL_OFFSETS = [
+export const WHEEL_OFFSETS = [
   [FRONT_HALF_TRACK, FRONT_AXLE],
   [-FRONT_HALF_TRACK, FRONT_AXLE],
   [REAR_HALF_TRACK, REAR_AXLE],
@@ -60,6 +64,17 @@ export class KartSuspension {
     this.pitch.reset();
     this.roll.reset();
     this.heave.reset();
+  }
+
+  groundNormal(yaw: number) {
+    const sin = Math.sin(yaw);
+    const cos = Math.cos(yaw);
+    const length = Math.hypot(1, this.groundSlope, this.groundBank);
+    return {
+      x: (-this.groundBank * cos - this.groundSlope * sin) / length,
+      y: 1 / length,
+      z: (this.groundBank * sin - this.groundSlope * cos) / length,
+    };
   }
 
   travel() {

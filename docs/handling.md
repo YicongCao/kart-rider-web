@@ -1,101 +1,182 @@
 # P3563 漂移与赛道碰撞
 
-## 原版依据
+## 证据边界
 
-| 来源 | 可复查的位置 | 用途 |
+这份实现不是用曲线拟合去“看起来像漂移”。横向轮胎、漂移触发时序、自动滑移、
+四轮支撑和刚体积分都来自 P3563 二进制反编译与实机采集。仍有未闭合的模块，
+本文在“已知差距”中逐项列出，不把局部证据当成完整等价移植。
+
+| 来源 | 证据 | 用途 |
 | --- | --- | --- |
-| P3563 单机版自带的 `Launcher.dll` | REA 从 `Launcher.exe` 解出的程序集，SHA-256 为 `4b0c0023428c44bc8ef7917d95c0538a078716df5354f974e1bed40e61feba36`。查看 `ExcData.SpeedType.SpeedTypeData` 的国服 S7 分支及 `Default` | 质量 100、前后轮抓地系数 5、漂移触发系数 0.2、触发时间 0.2 秒、滑移系数 0.2、漂移脱困推力 2600 |
-| 同一程序集的 `KartRider.KartSpec::.ctor` | 方法令牌 `0x06000968`，IL 偏移 `0x1e3` | 碰撞时保留 50% 的未结算漂移集气 |
-| 同一程序集的 `LocalTimeAttackParameters` | `wheelBase=1.2999999` | 前后轴到质心距离均为 0.65 米 |
-| 棉花糖 `cotton1/model.1s` 和 `param.xml` | `ReKart.rootBounds` 位于模型偏移 `0x6491` | 车体宽 1.615 米、长 1.709 米，矩形随车身旋转。车辆参数在基础推力上增加前进 10、倒车 50 |
-| 四条赛道的 `track.1s` | `TrackObject` 的 `course` 属性、`ToRoad` 路段和 `ReTriList` / `ReTriStrip` 网格 | 还原道路顺序、护栏位置、桥面高度及冰山的 `warpnext` 传送门 |
+| P3563 `KartRider.exe`，`FUN_00B53F80` | 反编译、反汇编、实机同状态力/力矩对照 | 前后轴滑移角、漂移 factor、trigger 后轴力、侧倾力矩 |
+| P3563 `FUN_00B53380` | 反编译、实机载荷/力矩样本 | 四轮弹簧力、车身 up 方向、支撑力矩 |
+| P3563 `FUN_00B53610` | 反编译、逐子步实机 trace | 油门牵引、负前速恢复力、自动滑移推力切换 |
+| P3563 `FUN_00B48960` / `FUN_00B4EFC0` | 反编译、2 ms 子步调用顺序 | Shift 入口、trigger、linger、转向 |
+| P3563 `Launcher.dll` | S7 与 `cotton1` 参数合成 | 质量、最大转角、抓地系数、阻力、推力 |
+| 2004 demo 重建 | 已归档的 lateral / trajectory oracle CSV | 公式与积分结构的独立对照 |
+| 实机采集 | `work/rea/town_first_bend_20261128/`、`work/rea/p3563_paired_drift_20261128_0027/` | 首弯、直道、持续漂移、自动滑移 |
+| KSV 回放 | 31 个回放、17 条原版赛道、218 个 player record、7454 段漂移 | 效果分布对照，不是同赛道逐弯坐标映射 |
 
-REA 的程序集成员分析记录为 `ev_dbdb91c613681b0eeb8a0ad3966a0592d2d32b16cf594f5d1e5ed74da44274ec`，棉花糖包围盒记录为 `ev_b9e73b2876aef18f0fa7c58eb8865de44ac71910fc4d21cdc3127955f08bbd20`。对 P3563 原生 `KartRider.exe` 的静态检查未能还原完整的逐帧物理解算器。Web 版漂移期的双轴受力模型参考了工作区 KartSim 的轮胎分析；抓地阶段使用单独的限幅自行车模型，参数按实玩和录像校准。
+2004 oracle 的力最大误差为 `0.000149 N`，横摆力矩 `0.0000284 N·m`，位置
+`1.07e-5 m`。这份 oracle 使用 demo 的 `driftTriggerFactor=0.05`，不是 P3563
+的 `0.2`；它证明公式和积分复现，不证明 P3563 全链路等价。
 
-## 首弯对照
+## 固定步与状态机
 
-以工作区 `采风/P3563-计时赛` 中城镇高速公路的 199 km/h 入弯画面为零点，时间取画面上的比赛时钟。复测在平地保持油门，右转加 Shift，0.42 秒松 Shift，0.63 秒反打，1.05 秒松方向。原始采风没有逐帧按键日志，按键时刻取近似值。
+车辆内部固定步长是 **2 ms**。每个子步的原版顺序是：
 
-| 入弯后秒数 | 0.41 | 0.81 | 1.22 | 1.66 | 1.84 | 2.03 | 2.50 | 2.88 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| P3563 表速（km/h）| 196 | 179 | 160 | 151 | 152 | 152 | 168 | 177 |
-| Web 表速（km/h）| 198 | 183 | 167 | 159 | 157 | 156 | 167 | 176 |
-
-1.84 秒的原始画面读数为 152 km/h；此前记录的 147 km/h 来自压缩帧，相邻帧为 151、152 km/h。相同输入下，旧版平地净转角约 33°；当前模型约 94.0°，八段表速依次为 198、183、167、159、157、156、167、176 km/h，与录像采样最大相差 8 km/h。从 Web 起跑线实际加速入弯，车身绕过内侧护栏后与出口直道仍保持正向。
-
-## 抓地模型
-
-抓地阶段使用转向角 `steer × 10° × exp(-|v| / 22.25)` 和 0.65 米半轴距，目标横摆率取自行车模型的 `v / wheelBase × tan(steer)`。转向输入经过 0.1 秒一阶响应，横摆率经过 0.09 秒响应，并按 `gripLateralAccelLimit × surface.grip / max(|v|, 1)` 限幅。车身侧滑按每秒 7 次的比例回正，冰面按抓地系数同比降低横摆上限和回正速率。纵向转弯拖速仍按 `0.18 × |speed × yawRate| × mass` 计算。
-
-直接把这套力解算用于普通转向时，`mass / 12` 的平面惯量会让 90 km/h 的全舵输入产生超过 50% 的车身侧滑，连续修正会左右甩动并顶墙。因此抓地阶段不启用双轴力解算，改为限幅自行车模型；这些限值属于 Web 标定，不是 P3563 直接读取的原值。
-
-### 抓地验收
-
-每次交付前运行 `npm run verify`。其中 `tests/grip-lap.spec.ts` 要求：
-
-- 全油门直行 5 秒后仍保持直线。
-- 连续左右修正后，持续左转必须仍能建立左向横摆。
-- 90 km/h 持续全舵转弯时，车身侧滑比低于 12%。
-- 不使用 Shift、氮气或任何漂移输入，由路线跟随控制器完成一整圈城镇高速公路；不得撞墙、逆行、离地后失控或把车开到反向，圈速上限按路线长度计算。
-
-## 漂移期轮胎模型
-
-漂移期基础分支使用前后轮侧向力 `980 × 5 × slip`、0.65 米半轴距和 `mass / 12` 平面转动惯量；前后轮滑移角饱和在 ±0.10 弧度。横摆力矩为 `halfWheelbase × (Ff - Fr)`。Shift 按下并带方向时启动一次 0.2 秒触发相，触发力只作用于前轴并与转向角成正比；后轴在触发相不产生侧向力。集气窗从触发相结束后开启，触发相本身不计入集气。
-
-`updateDriftState()` 接收的是 `driftHeld`，不是“按住 Shift 且有方向”的组合。active 阶段只要 Shift 还按着，即使反打经过零舵也不会结束漂移；只有松开 Shift 才进入 decay。此前把零舵当成松键，会让左右反打反复触发 decay，表现为左右摇摆、几次之后无法继续左转。
-
-恢复出的 H5 轮胎模型在高速漂移时单独使用时转角不足，且保速偏高，因此漂移层保留一组 Web 标定值。以下是持续按住 Shift 0.45 秒后启用的分支，不是 P3563 直接读取的原值：
-
-| 参数 | 值 | 作用 |
-| --- | ---: | --- |
-| `driftActiveFrontGripFactor` | 1.25 | 持续漂移前轴抓地倍率 |
-| `driftActiveRearGripFactor` | 0.45 | 持续漂移后轴抓地倍率 |
-| `driftActiveYawRate` | 0.82 rad/s | 中位转向时的基础横摆 |
-| `driftActiveSteerYawRate` | 0.62 rad/s | 向弯内追加的横摆 |
-| `driftActiveCounterYawRate` | 1.5 rad/s | 反打时的回正横摆 |
-| `driftActiveYawResponseTime` | 0.14 s | 横摆目标响应 |
-| `driftActiveSteerAngleScale` | 2 | 持续漂移原始转角倍率 |
-| `driftSlipSaturation` | 0.32 rad | 持续漂移滑移角饱和 |
-| `driftActiveSlipAngle` | 1.14 rad | 中位转向时的车身滑角包络 |
-| `driftActiveSlipSteerAngle` | 0.2 rad | 向弯内追加的滑角 |
-| `driftActiveSlipResponseTime` | 0.18 s | 滑角包络响应 |
-| `driftActiveThrustFactor` | 4 | 持续漂移保速推力 |
-| `driftSustainTime` | 0.45 s | 进入持续漂移的时间 |
-| `driftSlipDrag` | 0.25 | 漂移初期纵向擦滑 |
-
-滑角包络每个物理步只插值滑角，并用原合速度重建前向/侧向分量，而不是分别混合两个速度分量。分别混合时，方向变化会缩短速度向量，持续漂移在 0.25 至 0.45 秒内会掉 40 km/h 以上；改成滑角旋转后保速由 `driftActiveThrustFactor` 控制，首弯和逐弯保速都能同时通过。
-
-松开 Shift 后进入 decay，前后抓地按 `driftRecoveryGripFactor=3.5` 恢复，并在 `driftSettleTime=1.8` 秒后按 `driftSettleYawDamping=6` 收敛横摆。保留较大的 `driftYawInertiaFactor=10.44` 以维持 P3563 的可见转角和速度曲线；触发角另以 `driftTriggerAngleScale=3.6` 补偿尚未还原的 `triggerRawSteer`。
-
-## 逐弯漂移验收
-
-`tests/support/drift-course.ts` 是一个不依赖浏览器、DOM 或 Three.js 渲染的共享模拟器。它只使用 `KartVehicle`、`Route` 和 `TrackCollision`：控制器以 100 Hz 采样，车辆内部仍按 2 ms 固定步积分。Web 版与单机版只要共用这三块运行时模块，就能复用同一套逐弯验收，而不需要截图或人工试玩。
-
-单机版使用不同资产目录时，通过环境变量指向包含 `tracks/<track>/route.json`、`track.gltf` 和 `track.bin` 的根目录：
-
-```bash
-KART_DRIFT_ASSET_ROOT=/path/to/standalone/assets \
-  npx playwright test tests/drift-corners.spec.ts --reporter=line
+```text
+B53380 支撑/接触
+B53610 转向与纵向力
+B48960 Shift 入口（只在按键事件帧调用）
+B53F80 横向轮胎、trigger/linger、自动滑移
 ```
 
-弯道从生产 `Route` 数据提取，分段参数为 `minLength=18`、`straightMinLength=18`、`flatSlope=0.0025`。小于 20 米的导出伪段会被报告在 `filteredShortCorners`，不当作可漂移弯；城镇高速 `s≈1814..1827` 的 13 米连接折角属于这一类。其余每个弯都独立跑一次完整验收：
+Shift 按下时，如果 linger 已归零：
 
-- 弯前 5 米起漂，0.3 秒全舵 kick，随后按 8 至 11 米前瞻和 2 米内线跟随。
-- 弯内持续按住 Shift，弯后 8 米才收漂；滑角在弯后 3 米内收敛。
-- 覆盖率至少 0.8，最大断档不超过 0.25 秒，单次漂移至少 0.9 秒。
-- 出弯朝向误差不超过 30°。
-- 弯内侧滑中位数在 20° 至 70°。
-- 漂移保速在 0.75 至 1.2。
-
-```bash
-npx playwright test tests/drift-corners.spec.ts --reporter=line
+```text
+inputActive = true       // AF4
+triggerActive = true     // B08
+triggerTimer = 0         // B0C，下一子步播种 0.2 s
+lingerTimer = 2 * 0.2    // AF8 = 0.4 s
 ```
 
-当前四条赛道共 94 个真实弯全部通过：城镇 13、沙漠 27、森林 33、冰山 21。每条赛道的逐弯明细写入 `test-results/drift-corners/<track>.json`，包含失败原因、覆盖率、出弯误差、侧滑、保速和与原版 KSV 的对比结果。
+- trigger 窗口为 **0.2 s**，期间前轴力为零，只有后轴触发力。
+- trigger 窗口内 linger **不递减**；trigger 结束后才开始从 0.4 s 倒数。
+- 松 Shift 只清 `inputActive`，不清 trigger 或 linger。早松 Shift 不会把低抓地
+  窗口砍成“按下后 0.4 s”。
+- trigger + linger 结束后才允许下一次 Shift 触发。
+- 速度 `<= 5 m/s` 时清空 AF4/AF8/B08/B0C，低抓地状态不会在停车后残留。
+- 自动滑移在 `AF4 == 0 && B08 == 0` 时检测：速度 `> 15 m/s` 且
+  `|vLateral| > 1.2 * |vForward|` 进入 active。P3563 的门槛是 15 m/s，
+  不是 2004 demo 的 5 m/s。
 
-## 原版 KSV 漂移参考
+`src/game/lateral-physics.ts` 的 trigger/active/linger 已由
+`tests/original-physics.spec.ts` 覆盖；零舵不会结束按住 Shift 的漂移，只有
+松 Shift 或低速清除会结束。
 
-`tests/fixtures/drift-reference.json` 由客户端自带的 KSV 回放生成，只保留统计量，不包含原始逐帧数据或玩家名：
+## 横向轮胎
+
+高速普通/漂移分支：
+
+```text
+speed      = hypot(vForward, vLateral)
+travelSign = vForward > 0 ? +1 : -1
+yawTerm    = 0.5 * yawRate / speed
+frontSlip  = steerAngle * travelSign - vLateral/speed - yawTerm
+rearSlip   =                         - vLateral/speed + yawTerm
+
+frontForce = weight * FrontGripFactor * frontSlip
+rearForce  = weight * RearGripFactor  * rearSlip
+lateralForce = frontForce + rearForce
+yawTorque    = 0.5 * frontForce - 0.5 * rearForce
+```
+
+其中 `weight = mass * 9.8`，不是世界重力 `58.8`。trigger 分支为
+`frontForce = 0`、`rearForce = -weight * FrontGripFactor * rawSteer *
+MaxSteerAngle * DriftTriggerFactor`。按住 Shift 的漂移使用原始 `rawSteer ×
+MaxSteerAngle` 全锁角；普通抓地使用速度衰减后的 `+0xAA4` 转角。active/linger
+分支的前后轴力都会乘 `DriftSlipFactor`。
+
+实机同状态对照中，横向力最大误差 `0.00230 N`、横摆力矩 `0.000165 N·m`、
+侧倾力矩 `0.000029 N·m`、有效转角 `3.3e-8 rad`。这是在 surface 0 的普通
+路面上取得的，不是全部表面模式。
+
+## 支撑、重力和防穿透
+
+P3563 的地面支撑不是一条“贴地弹簧”，而是四个轮载沿车身 up 轴施加的力：
+
+```text
+springForce = max(0, 2940 * compression + damping * dCompression/dt)
+wheelForce  = springForce * max(0, dot(groundNormal, bodyUp)) * bodyUp
+```
+
+- 压缩方向阻尼 `0`，回弹方向阻尼 `588 N/(m/s)`。
+- 静止压缩约 `0.5 m`，四轮合计约 `4 × 1470 = 5880 N`。
+- 世界重力为 `-58.8 m/s²`，与 `mass=100` 的 `5880 N` 对消。
+- 支撑力矩使用实测半宽 `0.766791 m`、半长 `0.817228 m` 和 native 的 `0.1`
+  力矩比例。
+
+地面支撑只从实际接触产生；没有接触样本时不会凭空加力。空中弹道仍沿用 Web
+原有的 `9.81 m/s²` 悬架轨迹，因为现有采集没有 P3563 跳跃样本，不能把地面
+重力直接推成空中重力。
+
+### 防穿透边界
+
+实机支撑射线必须覆盖从全伸展到 bump stop 的行程。Web 早期实现只从静止压缩
+`0.5 m` 处向下查地面；一旦底盘下沉超过 0.5 m，射线看不到路面，四轮支撑同时
+消失，车身会持续下坠。森林 7 弯曾复现到接地状态下刚体低于车道 `63.73 m`。
+
+现在：
+
+- 支撑射线延伸到 `2 × 0.5 = 1.0 m` 的全压缩行程；
+- 接地时车身相对行程限制在 `[-1.0, +0.5] m`，并在 bump stop 处清除同向速度；
+- 支撑弹簧在 1.0 m 压缩处钳位，不会因为 `|distance| > 0.5` 直接判为无接触。
+
+`tests/contact-force.spec.ts` 用 `-40 m/s` 的垂直入射和平面地面验证底盘不会
+穿过路面；`tests/support/drift-course.ts` 还会把“接地状态下下沉超过 1.05 m”
+作为逐弯失败条件。
+
+## 抓地驾驶
+
+抓地阶段直接使用上面的 P3563 双轴轮胎模型，不再使用之前的限幅自行车模型。
+转向输入是键盘的 `-1/0/1`；左右键采用“最近按下者拥有转向”的仲裁，松开旧
+方向不会取消仍按住的新方向。`Route.query` 的横向基已修正为驾驶员右侧正方向。
+
+首弯对照来自 `townb02.ndjson` 与实际 HUD：
+
+- 原版 `+2.879 s` 的前向轴航向为 `106.194°`。
+- Web 正式回放为 `105.443°`，误差 `0.751°`。
+- 八个 HUD 采样点最大误差 `5.63 km/h`，上限保持 `< 9 km/h`。
+- 测试同时检查三个时刻的有符号航向/侧滑，并验证左右镜像。
+
+抓地整圈验收 `tests/grip-lap.spec.ts` 的最终实测：
+
+| 指标 | 值 |
+| --- | ---: |
+| 圈时 | `133.27 s` |
+| 允许上限 | `191.43 s` |
+| 最大侧滑比 | `0.1827` |
+| 最大偏离中心线 | `3.25 m` |
+| 碰撞 | `0` |
+| 逆行 | `false` |
+| 使用漂移 | `false` |
+
+这证明抓地跑法可以完整、无碰撞地完成城镇高速一圈；它不证明该线路是最快圈速。
+
+## 每弯漂移验收
+
+`tests/support/drift-course.ts` 是不依赖浏览器、DOM、`Game` 或 `KartView` 的
+确定性模拟器。它使用共享的 `KartVehicle`、`Route`、`TrackCollision`，再加
+测试侧的弯道分析、三 GLTF 解析和驾驶控制器。控制器 100 Hz 采样，车辆内部
+仍按 2 ms 固定步积分，键盘转向只允许 `-1/0/1`。
+
+四条赛道从生产 `Route` 提取真实弯，过滤小于 20 m 的导出伪段：
+
+| 赛道 | 真实弯 | 通过 |
+| --- | ---: | ---: |
+| 城镇高速 | 13 | 13 |
+| 沙漠旋转工地 | 27 | 27 |
+| 森林发夹 | 33 | 33 |
+| 冰山滑雪场 | 21 | 21 |
+| 合计 | 94 | 94 |
+
+每个弯独立从弯前起漂，验收条件：
+
+- 弯内漂移覆盖率至少 0.8，最大断档不超过 0.25 s；
+- 单次漂移 episode 至少 0.9 s；
+- 弯末速度航向误差不超过 45°，最终车身航向误差不超过 30°；
+- 弯内侧滑中位数 20°–70°；
+- 漂移保速 0.75–1.2；
+- 无碰撞、无倒车、无离路、无接地穿透；
+- 起漂必须在弯体之前，并覆盖弯体入口。
+
+当前 94 个弯全部一次通过，report 在 `test-results/drift-corners/<track>.json`。
+每个弯还必须提供一段完整、可测的 active/linger effect；trigger 不计入。
+
+## 与原版 KSV 的效果对照
+
+KSV fixture 只保存统计量，不保存原始逐帧数据或玩家名：
 
 ```bash
 python3 scripts/ksv_drift_reference.py \
@@ -103,64 +184,93 @@ python3 scripts/ksv_drift_reference.py \
   --out tests/fixtures/drift-reference.json
 ```
 
-当前 fixture 覆盖 31 个回放、17 条原版赛道、218 个 player record 和 7454 段漂移。另有 5610 段由回放轨迹自行检测的弯，其中 3259 段漂移覆盖率不低于 0.8，占 58.09%。原版分布的 p25/中位/p75 为：
+比较方法按原版脚本的 10 Hz 位置差分：
 
-| 指标 | p25 | 中位 | p75 |
+- 只取 KSV effect 2/3 对应的 active/linger；trigger 不算。
+- 10 Hz 重采样，允许一个 tick（0.2 s）的断点，最少 4 个 tick（0.4 s）。
+- 侧滑用速度航向减车身航向，速度低于 5 m/s 的样本不计。
+- 横向/纵向速度用相邻采样位置差分，不用 Web 的瞬时速度字段直接冒充原版口径。
+- effect 时长不足 1.5 s 的弯没有完整窗口，报告会显式列出，不用截断窗口凑数。
+
+原版 1.5 s 窗口与 Web 的逐弯 effect 中位数：
+
+| 赛道 | 保速 | 横摆率 | 侧滑角 |
 | --- | ---: | ---: | ---: |
-| 漂移时长 | 0.90 s | 1.50 s | 2.30 s |
-| 保速 | 0.837 | 0.9703 | 1.0175 |
-| 横摆率 | 28.35 °/s | 55.47 °/s | 91.04 °/s |
-| 侧滑角 | 41.41° | 53.05° | 60.05° |
+| 城镇 | 0.9991 | 30.13 °/s | 42.81° |
+| 沙漠 | 0.9959 | 61.73 °/s | 49.89° |
+| 森林 | 0.9969 | 43.22 °/s | 45.78° |
+| 冰山 | 0.9944 | 40.92 °/s | 46.82° |
+| 原版 p25–p75 | 0.837–1.0175 | 28.352–91.043 °/s | 41.414–60.045° |
 
-### 比较口径
+四条赛道的三项中位数都落在原版 IQR 内，`effectIqrMisses` 为空，
+`truncatedEpisodes=0`。Web 整段漂移时长中位约 1.98–4.89 s，长于原版逐 episode
+的 1.5 s 中位；这是“整弯持续按住 Shift”的验收策略造成的，报告中只作描述，
+不参与 effect 判定。
 
-逐弯验收会在每个弯刻意按住 Shift 到弯后 8 米，因此 Web 的整段漂移中位约 4.7 秒，远长于原版逐 episode 的 1.5 秒中位。直接把整段 Web episode 拿去比时长，会把“整弯持续漂移”的测试策略误判成手感差异。
+## 共享运行时与单机资产根
 
-因此效果对比取每次起漂后的第一个 1.5 秒窗口，只比较同一时间基上的保速、横摆率和侧滑角；整段 episode 时长仍写入报告，并用 `rawDurationNote` 明确标注不参与效果判定。报告同时给出 Web 中位数、原版 p25/p50/p75、偏差百分比和原版 IQR 命中情况。`tests/drift-corners.spec.ts` 要求三个效果指标的中位数都落在原版 IQR 内。
+测试入口支持显式资产根：
 
-当前 94 个窗口的实测中位数：
+```bash
+KART_DRIFT_ASSET_ROOT=/path/to/standalone/assets \
+  npx playwright test tests/drift-corners.spec.ts --reporter=line
+```
 
-| 赛道 | 横摆率 | 侧滑角 | 保速 |
-| --- | ---: | ---: | ---: |
-| 城镇 | 35.2 °/s | 42.8° | 1.002 |
-| 沙漠 | 62.0 °/s | 56.8° | 0.998 |
-| 森林 | 45.2 °/s | 47.9° | 1.003 |
-| 冰山 | 46.5 °/s | 49.7° | 1.003 |
-| 合计 | 47.2 °/s | 48.8° | 1.000 |
+资产根布局：
 
-这些中位数都落在原版横摆 28.35 至 91.04 °/s、侧滑 41.41° 至 60.05°、保速 0.837 至 1.0175 的 IQR 内。沙漠的数值最接近原版中位，城镇和森林包含更多长缓弯，因此横摆率低于跨赛道中位。
+```text
+tracks/<track>/route.json
+tracks/<track>/track.gltf
+tracks/<track>/track.bin
+```
 
-### 证据边界
+`tests/shared-drift-runtime.spec.ts` 会把城镇资产复制到临时根，改写
+`route.json.length` 为哨兵值，再通过 `loadTrack("village", root)` 读回该值，
+证明测试没有写死 `public/assets`。仓库没有独立单机工程或单机运行时二进制，
+因此这里只验证“共享运行时 + 不同资产根”的机制，不声称已经实际驱动单机版。
+单机版要复用这套验收，必须共用 `KartVehicle`、`Route`、`TrackCollision` 的
+同一实现；如果使用另一套物理代码，结论不能直接迁移。
 
-- 原版分布跨 17 条赛道，不是 Web 同赛道逐弯映射。`pathCorners` 是每个回放自身轨迹的统计，不能直接对到 Web `route.json` 的坐标。
-- 城镇高速没有原版 KSV 回放，因此城镇只做硬指标和跨赛道分布检查，不能声称逐弯对应原版。
-- 原版记录的是 10 Hz 车辆状态和漂移效果位，没有按键按下/释放时刻；Web 的按键时序来自控制器与实玩标定。
-- 逐弯测试证明“抓地/漂移可以正向通过这个弯”，不等于证明该线路是最快圈速。圈速上限仍由 `tests/grip-lap.spec.ts` 的抓地整圈验收单独约束。
+## 已知差距
 
-## 出弯小喷与连喷
+- **表面模式 1/2 与 `+0x65C` 未移植。** 实机 paired trace 的 surface 都是 0。
+  冰山等赛道目前使用 Web 的 grip 倍率，不是 P3563 的完整 surface 表；不能声称
+  冰山漂移已逐帧等价。
+- **空中弹道未按 P3563 的 58.8 m/s² 验证。** 现有采集没有跳跃样本，悬架空中
+  分支仍用 Web 的 9.81 m/s²，坡道和断崖测试只证明既有 Web 轨迹未回归。
+- **4200 N 是采集值，不是全局常数。** 城镇首弯这场 S7/棉花糖配置实测自动滑移
+  推力为 `4200 N`；Launcher 的 2600 + 1600 合成来源尚未独立闭合。其他车型或
+  速度模式需要各自采集，不能直接套用。
+- **live trace fixture 只有 12 个采样，截至 0.846 s。** 侧向速度由速度模长
+  重建并带符号推断；它是短时回归，不是完整 P3563 长漂移证明。2004 oracle 和
+  同状态力对照补足公式层，但不能替代同场景长 trace。
+- **支撑几何来自共享实机候选。** 半宽/半长/0.8 探点由支撑力矩残差支持，
+  未独立读到每个 getter；当前 `contact-force` 单测验证公式和输入样本。
+- **KSV 是跨 17 条赛道的 corpus，不是同赛道逐弯映射。** 城镇没有原版 KSV
+  回放，因此城镇只做硬指标和跨赛道分布检查，不声称逐弯对应原版。
+- **逐弯测试证明“可通过”，不证明“最快”。** 驾驶器是确定性验收器，不是人类
+  最优线路；圈速上限由 `tests/grip-lap.spec.ts` 单独约束。
+- **练习 D 的小喷差异仍记录为 known gap。** 原版记录中该次补油点火，Web
+  不点火；测试明确记录差异，没有通过放宽阈值隐藏。
 
-P3563 的 `stage_trainingCenterAdBooster` 训练关要求先反打收车，再按前进键触发瞬间加速。城镇高速公路的练习车对照里，两次按键时序相近，车尾仍在横滑时补油没有点火，延后约 0.28 秒补油才成功。另一次实测在尾焰尚未消退时成功起了下一次漂移。
+## 验收命令
 
-在原版车库装备棉花糖 C1 后，同一赛道的小喷从车尾左侧喷出黄橙色短焰，亮起时伴有向车侧扫过的气流。一次持续补油中，原版比赛钟 13.49 秒时喷口尚暗，13.55 至 13.99 秒可见尾焰，14.08 秒时已经熄灭。提前松油的另一次试跑约 0.16 秒就熄火。练习车的白芯蓝焰、双环和紫色细尾属于另一种车型效果。两辆车的小喷都保留了氮气槽，右下角“加速”均保持 0。
+交付前必须运行：
 
-客户端附带的 `zeta_cn_ksv.rho/result_20250317_2043.ksv` 以 100 ms 间隔记录车辆状态。跳过开局八秒，八个车手共有 63 段短喷，其中 36 段持续五个采样。其中点火首帧带有漂移效果的也有 36 段，两组统计可以重叠。回放记录的是车辆状态，缺少原始键盘按下与释放时刻。
+```bash
+npm run verify
+```
 
-Web 版使用棉花糖 `cotton1` 的参数。REA 查到随包 `Launcher.dll` 的 `AssignKartProperties` 对缺省的 `driftBoostMulAccelFactor` 取 1，套用 S7 个人加速倍率后为 1.494。小喷使用原额定推力 2160 N 乘以该倍率。以第一帧点火的 65 km/h 对齐，原版 0.44 秒后为 107 km/h，Web 约 108 km/h，区间内七个采样的表速误差均低于 2 km/h。收车判定和补油窗口按上述实机时序校准。一次回正可触发一次小喷，点火后松油会提前收喷，下一次漂移可以在上次尾焰消失前开始。小喷保留氮气槽，右下角的“加速”只统计氮气使用次数。可用 `npm test` 复查单喷、连喷、提前补油与过期补油。
+单独的快速回归：
 
-## 氮气槽与道具
-
-官方 `updateModeInventory()` 在 `committedGauge === driftMaxGauge` 时清空集气值，并把第一个空速度槽填为 `6`（N₂O）。`startNormalBooster()` 只在前进输入、`physicsState` 允许且首个速度槽有 N₂O 时启动，并消耗一个槽。Web 版沿用这一顺序：集气达到满槽的固定步马上转为 N₂O 道具并清零条值，不再把满条当作持续可用的加速条件；两个槽都满时，集气条保留到下一槽空出。底部细长条只表示当前集气，道具卡表示可用的 N₂O 次数，“加速”统计只计氮气启动次数。
-
-## 赛道网格
-
-`road-mesh-ranges.json` 将原始路面、护栏和独立桥面的三角形映射到现有 glTF。索引区间按展开父变换后的三个 Float32 顶点匹配。加载时按空间网格检索邻近面，再测试车身与三角形是否接触。额外的道路材质可承载车辆，桥板下缘和路面标志的立边不参与挡车。赛道网格重新导出后，需要重新匹配这些索引区间。
-
-城镇主线依次经过 `RoadObj01 → 04 → 08 → 09 → 01`。冰山经过 `RoadObj01 → 16 → 01`，山脚进入 `warpnext` 后接回 `liftup`。查询地面时使用车辆当前高度区分重叠桥面。
-
-## 接地和悬架
-
-车辆以 2 毫秒固定步长采样四个车轮下的网格。轮下高度决定车身俯仰、侧倾和车轮行程，弹簧阻尼产生落地后的压缩和回弹。前后轴的接地比例分别影响横向力，后轴接地影响普通油门推力。全车离地时暂停漂移状态转换和集气，轮胎也不留痕。追尾镜头独立缓冲垂直位移。
-
-断崖起跳时，速度达到 72 km/h 后可在行驶方向上查找 18 米内、与起跳口高度接近的落地面。短断崖允许一次有上限的起跳速度补偿，越过坡沿后由重力积分。这个补偿用于跨过导出网格上的断口，参数根据当前网格试跑确定。
-
-运行 `npm test` 可复查首弯速度和方向、擦墙与顶墙脱困、真实护栏和桥面、冰山传送门，以及单侧颠簸和冰山断崖的腾空落地。断崖用例覆盖 137 和 180 km/h 两种入坡速度。悬架参数尚未与 P3563 的逐帧飞坡轨迹校准。
+```bash
+npx playwright test \
+  tests/grip-lap.spec.ts \
+  tests/drift-corners.spec.ts \
+  tests/drift-reference.spec.ts \
+  tests/original-physics.spec.ts \
+  tests/original-trajectory.spec.ts \
+  tests/p3563-drift-trace.spec.ts \
+  tests/contact-force.spec.ts \
+  --reporter=line
+```

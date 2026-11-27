@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "source": "P3563 KartRider.exe PID 8424, read-only Frida hook of FUN_00B53F80",
+  "capturedAt": "2026-11-27T21:05:00+08:00",
+  "notes": [
+    "The kart is already turning with raw +1 steer and +1.59 rad/s yaw when the trace starts. The drift key is released at that point.",
+    "kr_capture2.py records every tenth B53F80 substep. The third sample after the start already has raw -1, drift active and 0.198 s left on the 0.2 s trigger timer. On the Web 2 ms grid this places the Shift press at 30 × 2 ms − 2 ms = 58 ms. The native capture does not record any 1 ms remainder steps. Sample timestamps are still the captured wall-clock offsets.",
+    "Forward speed is the native +0xADC field. Lateral speed is reconstructed as sqrt(+0xAF0^2 - +0xADC^2); the sign follows the observed yaw/steer transition because the live +0xAE0 read returned zero in this build.",
+    "No player names or replay identifiers are stored."
+  ],
+  "initial": {
+    "forwardSpeed": 27.53,
+    "lateralSpeed": -9.21,
+    "yawRate": 1.59,
+    "previousSteerAngleRad": 0.0571
+  },
+  "inputSwitchSeconds": 0.058,
+  "driftSteer": -1,
+  "driftThrottle": 1,
+  "samples": [
+    { "t": 0.000, "forwardSpeed": 27.53, "lateralSpeed": -9.21, "yawRate": 1.59 },
+    { "t": 0.064, "forwardSpeed": 28.12, "lateralSpeed": -10.77, "yawRate": 1.34 },
+    { "t": 0.156, "forwardSpeed": 28.58, "lateralSpeed": -12.68, "yawRate": 0.50 },
+    { "t": 0.220, "forwardSpeed": 29.77, "lateralSpeed": -12.61, "yawRate": -0.31 },
+    { "t": 0.313, "forwardSpeed": 31.64, "lateralSpeed": -10.37, "yawRate": -1.02 },
+    { "t": 0.376, "forwardSpeed": 33.73, "lateralSpeed": -6.38, "yawRate": -1.62 },
+    { "t": 0.469, "forwardSpeed": 35.38, "lateralSpeed": -1.15, "yawRate": -2.12 },
+    { "t": 0.533, "forwardSpeed": 36.05, "lateralSpeed": 5.19, "yawRate": -2.56 },
+    { "t": 0.624, "forwardSpeed": 35.20, "lateralSpeed": 12.25, "yawRate": -2.94 },
+    { "t": 0.720, "forwardSpeed": 32.31, "lateralSpeed": 19.60, "yawRate": -3.28 },
+    { "t": 0.782, "forwardSpeed": 27.13, "lateralSpeed": 26.44, "yawRate": -3.57 },
+    { "t": 0.846, "forwardSpeed": 19.81, "lateralSpeed": 31.86, "yawRate": -3.82 }
+  ],
+  "liveConstants": {
+    "maxSteerDeg": 10,
+    "steerConstraint": 24.61,
+    "frontGripFactor": 5,
+    "rearGripFactor": 5,
+    "driftLeanFactor": 0.06,
+    "steerLeanFactor": 0.01
+  },
+  "tolerances": {
+    "maxForwardSpeedError": 3.0,
+    "maxLateralSpeedError": 5.0,
+    "maxYawRateError": 0.4
+  }
+}

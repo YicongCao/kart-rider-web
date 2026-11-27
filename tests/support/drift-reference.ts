@@ -222,7 +222,7 @@ function planarSpeed(sample: DriftTelemetrySample) {
 }
 
 /**
- * Measure the first reference-duration window of each sustained Web drift.
+ * Legacy entry-window diagnostic (not the KSV acceptance comparison).
  *
  * The corner test intentionally holds Shift through the whole corner, so a
  * long bend produces a much longer episode than the KSV corpus's 1.5 s median
@@ -233,15 +233,30 @@ export function measureDriftEntryWindows(
   samples: readonly DriftTelemetrySample[],
   episodes: readonly DriftEpisode[],
   windowSeconds: number,
+  startOffsetSeconds = 0,
 ): WebDriftEpisode[] {
   if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) {
     throw new RangeError(
       `windowSeconds must be a positive finite number, got ${windowSeconds}`,
     );
   }
+  if (!Number.isFinite(startOffsetSeconds) || startOffsetSeconds < 0) {
+    throw new RangeError(
+      `startOffsetSeconds must be a non-negative finite number, got ` +
+      `${startOffsetSeconds}`,
+    );
+  }
   const ordered = [...samples].sort((a, b) => a.t - b.t);
+  const hasDriftPhase = ordered.some(
+    (sample) => sample.driftPhase !== undefined,
+  );
   return episodes.flatMap((episode) => {
-    const windowStart = episode.startTime;
+    const activeStart = ordered.find((sample) =>
+      sample.t >= episode.startTime - 1e-6 &&
+      sample.t <= episode.endTime + 1e-6 &&
+      sample.driftPhase === "active")?.t;
+    if (hasDriftPhase && activeStart === undefined) return [];
+    const windowStart = activeStart ?? episode.startTime + startOffsetSeconds;
     const windowEnd = windowStart + windowSeconds;
     if (windowEnd > episode.endTime + 1e-6) return [];
     const inside = ordered.filter((sample) =>
@@ -275,6 +290,64 @@ export function measureDriftEntryWindows(
       medianSideSlipDegrees: median(slips),
     }];
   });
+}
+
+type ReplaySample = Pick<DriftTelemetrySample, "t" | "yaw" | "driftPhase"> & {
+  x: number;
+  z: number;
+};
+
+/** Mirror scripts/ksv_drift_reference.py's 10 Hz grouping and position differences. */
+export function measureEffectEpisodes(samples: readonly ReplaySample[], method: DriftReferenceMethod) {
+  const frames: ReplaySample[] = [];
+  const hz = method.sampleRateHz;
+  let index = 0;
+  for (let tick = 0; samples.length && tick / hz <= samples.at(-1)!.t + 1e-8; tick++) {
+    const t = tick / hz;
+    while (index + 1 < samples.length && samples[index + 1].t <= t + 1e-8) index++;
+    const a = samples[index];
+    const b = samples[index + 1] ?? a;
+    const f = b.t > a.t ? Math.max(0, (t - a.t) / (b.t - a.t)) : 0;
+    frames.push({ t, x: a.x + f * (b.x - a.x), z: a.z + f * (b.z - a.z),
+      yaw: a.yaw + f * wrapAngle(b.yaw - a.yaw), driftPhase: a.driftPhase });
+  }
+  const groups: { start: number; end: number }[] = [];
+  for (const [i, frame] of frames.entries()) {
+    if (frame.driftPhase !== "active" && frame.driftPhase !== "decay") continue;
+    const group = groups.at(-1);
+    if (group && i - group.end <= Math.round(hz * method.maxDropoutSeconds)) group.end = i;
+    else groups.push({ start: i, end: i });
+  }
+  const velocity = (start: number, end: number) => {
+    const a = frames[start], b = frames[end];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    return { speed: Math.hypot(dx, dz) / (b.t - a.t), heading: Math.atan2(dx, dz) };
+  };
+  const width = method.speedWindowFrames - 1;
+  const episodes: WebDriftEpisode[] = [];
+  let truncated = 0;
+  for (const { start, end } of groups) {
+    if (end === frames.length - 1 &&
+      (samples.at(-1)?.driftPhase === "active" || samples.at(-1)?.driftPhase === "decay")) {
+      truncated++;
+      continue;
+    }
+    if (end - start < Math.round(hz * method.minDurationSeconds)) continue;
+    const duration = (end - start) / hz;
+    const entry = velocity(start, Math.min(end, start + width)).speed;
+    const exit = velocity(Math.max(start, end - width), end).speed;
+    let turn = 0;
+    const slips: number[] = [];
+    for (let i = start; i <= end; i++) {
+      if (i > start) turn += wrapAngle(frames[i].yaw - frames[i - 1].yaw);
+      const lower = Math.max(0, Math.min(frames.length - width - 1, i - Math.floor(width / 2)));
+      const v = velocity(lower, Math.min(lower + width, frames.length - 1));
+      if (v.speed > method.sideSlipSpeedFloor) slips.push(Math.abs(wrapAngle(v.heading - frames[i].yaw)) * DEGREES);
+    }
+    episodes.push({ duration, speedRetention: entry > 0 ? exit / entry : NaN,
+      yawRateDegreesPerSecond: Math.abs(turn) * DEGREES / duration, medianSideSlipDegrees: median(slips) });
+  }
+  return { episodes, truncated };
 }
 
 export interface DriftEpisodeDistribution {

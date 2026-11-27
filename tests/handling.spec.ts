@@ -8,30 +8,62 @@ import { KartVehicle, type VehicleInput, type VehicleOptions } from "../src/game
 import type { RouteData, Vec3 } from "../src/types";
 
 test("the first P3563 bend retains its speed profile and mirrors to the left", () => {
-  // P3563 race-clock offsets from the 199 km/h entry frame, and HUD km/h.
+  // In the P3563 capture, frames bend-12/14/16 are gallery images 18/19/20.
+  // The script sends Right + Shift before grabbing bend-12 (HUD 199), releases
+  // Shift on bend-14, counters on bend-15 and releases Left on bend-17. Its
+  // grabs are scheduled 210 ms apart; HUD samples use the race clock instead.
   // The 1.84 s sample is 152 km/h: the earlier 147 km/h reading came from a
   // compressed frame. Adjacent source frames read 151 and 152 km/h.
   const speeds = new Map([[41, 196], [81, 179], [122, 160], [166, 151],
     [184, 152], [203, 152], [250, 168], [288, 177]]);
+  // townb02.ndjson, steps 3011, 3321 and 4376, relative to entry 2910.
+  // Heading is the horizontal angle between the recorded forward axes.
+  // Slip is atan2(dot(V, R), dot(V, F)), mirrored for the Web right turn.
+  const poses = new Map([[20, [11.49, -11.51]], [81, [101.34, -81.62]],
+    [288, [106.19, -1.76]]]);
   const right = new KartVehicle({ speed: 199 / 3.6 });
   const left = new KartVehicle({ speed: 199 / 3.6 });
   for (let t = 0; t < 288; t++) {
-    const steer = t < 63 ? -1 : t < 105 ? 1 : 0;
+    const steer = t < 63 ? 1 : t < 105 ? -1 : 0;
     const input = { steer, drift: t < 42, throttle: 1 };
     const r = right.step(0.01, input);
     const l = left.step(0.01, { ...input, steer: -steer });
+    const pose = poses.get(t + 1);
+    if (pose) {
+      const heading = r.yaw * 180 / Math.PI;
+      const slip = Math.atan2(r.lateralSpeed, r.speed) * 180 / Math.PI;
+      expect(Math.abs(heading - pose[0]), `heading at ${(t + 1) / 100}s`).toBeLessThanOrEqual(2);
+      expect(Math.abs(slip - pose[1]), `slip at ${(t + 1) / 100}s`).toBeLessThanOrEqual(2);
+    }
     const target = speeds.get(t + 1);
     if (target === undefined) continue;
     const kmh = Math.hypot(r.speed, r.lateralSpeed) * 3.6;
-    expect(Math.abs(kmh - target), `HUD at ${(t + 1) / 100}s`).toBeLessThan(9);
+    expect(Math.abs(kmh - target), `Web HUD at ${(t + 1) / 100}s`).toBeLessThan(9);
+    // P3563's AF0 speedometer includes the world vertical velocity.
+    const { x, y, z } = right.physicsSnapshot.velocity;
+    expect(Math.abs(Math.hypot(x, y, z) * 3.6 - target), `AF0 at ${(t + 1) / 100}s`).toBeLessThan(9);
     expect(l.x).toBeCloseTo(-r.x, 6);
     expect(l.z).toBeCloseTo(r.z, 6);
     expect(l.yaw).toBeCloseTo(-r.yaw, 6);
   }
-  const heading = -right.state.yaw * 180 / Math.PI;
-  expect(heading).toBeGreaterThan(80);
-  expect(heading).toBeLessThan(100);
   expect(right.state.drifting).toBe(false);
+});
+
+test("automatic slip switches the tires one substep before the escape thrust", () => {
+  // townb02: the slip condition first holds at +473 ms. B53610 still
+  // supplies 2304 N then, and supplies 4200 N at +475 ms.
+  const kart = new KartVehicle();
+  const control = new KartVehicle({ tuning: { driftEscapeForce: 2304 } });
+  for (const vehicle of [kart, control]) {
+    const snapshot = vehicle.physicsSnapshot;
+    vehicle.restorePhysicsSnapshot({ ...snapshot, velocity: { x: 20, y: 0, z: 10 } });
+    expect(vehicle.step(0.002, { throttle: 1 }).driftPhase).toBe("active");
+  }
+  expect(kart.physicsSnapshot.velocity).toEqual(control.physicsSnapshot.velocity);
+  kart.step(0.002, { throttle: 1 });
+  control.step(0.002, { throttle: 1 });
+  const delta = kart.physicsSnapshot.velocity.z - control.physicsSnapshot.velocity.z;
+  expect(delta).toBeCloseTo((4200 - 2304) / 100 * 0.002, 6);
 });
 
 // A straight wall at x=0. Use the oriented footprint so a rotating bumper can
@@ -85,9 +117,13 @@ test("a ramp launches the kart and landing compresses and settles the suspension
   let landed = false;
   let peak = 0;
   let minimumHeave = 0;
+  let touchdownHeave = 0;
+  let reboundHeave = 0;
+  let lastAirborneSpeed = 0;
   let launchYaw = 0;
-  for (let frame = 0; frame < 200; frame++) {
-    const state = kart.step(0.01, sawLift && !landed ? { throttle: 1, steer: 1, drift: true } : {});
+  const dt = 0.002;
+  for (let step = 0; step < 1000; step++) {
+    const state = kart.step(dt, sawLift && !landed ? { throttle: 1, steer: 1, drift: true } : {});
     const ride = state.suspension!;
     if (!ride.grounded) {
       if (!sawLift) {
@@ -96,19 +132,30 @@ test("a ramp launches the kart and landing compresses and settles the suspension
         expect(ride.verticalSpeed).toBeGreaterThan(2);
         expect(ride.pitch).toBeGreaterThan(0.1);
       }
+      lastAirborneSpeed = ride.verticalSpeed;
       peak = Math.max(peak, state.y);
       expect(state.yaw).toBeCloseTo(launchYaw, 6);
       expect(state.gauge).toBe(0);
       expect(state.drifting).toBe(false);
     } else if (sawLift) {
-      landed = true;
+      if (!landed) {
+        // This synthetic jump exercises the Web visual spring. On contact it
+        // takes 32% of impact speed before its first damped integration step.
+        const impactSpeed = lastAirborneSpeed - 9.81 * dt;
+        expect(impactSpeed).toBeLessThan(0);
+        touchdownHeave = ride.heave;
+        expect(touchdownHeave).toBeCloseTo(0.32 * impactSpeed * (1 - 2 * 0.65 * 26 * dt) * dt, 5);
+        landed = true;
+      }
       minimumHeave = Math.min(minimumHeave, ride.heave);
+      reboundHeave = Math.max(reboundHeave, ride.heave);
       expect(state.y).toBeCloseTo(0, 4);
     }
   }
   expect(peak).toBeGreaterThan(1.25);
   expect(landed).toBe(true);
-  expect(minimumHeave).toBeLessThan(-0.03);
+  expect(minimumHeave).toBeLessThan(touchdownHeave);
+  expect(reboundHeave).toBeGreaterThan(0);
   expect(kart.state.suspension!.heave).toBeCloseTo(0, 3);
 });
 

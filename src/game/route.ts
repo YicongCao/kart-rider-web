@@ -149,7 +149,9 @@ export class Route {
       lerp(a.u[1], b.u[1], bestT),
       lerp(a.u[2], b.u[2], bestT),
     ]);
-    const right = normalize(cross(forward, up));
+    // Right-handed course basis: forward x up points to the driver's left.
+    // Using that as +right historically inverted every lateral offset.
+    const right = normalize(cross(up, forward));
     const centerX = lerp(a.p[0], b.p[0], bestT);
     const centerY = lerp(a.p[1], b.p[1], bestT);
     const centerZ = lerp(a.p[2], b.p[2], bestT);
