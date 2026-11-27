@@ -7,9 +7,9 @@ import { RaceWorld } from "./world";
 import {
   FIXED_STEP_SECONDS,
   KartVehicle,
-  type RoadSurface,
   type VehicleState,
 } from "./vehicle";
+import { trackSurface } from "./track-surface";
 import { Menu } from "../ui/menu";
 import { GRID_SIGNALS, Hud, type RaceResult } from "../ui/hud";
 
@@ -337,18 +337,7 @@ export class Game {
         };
       },
     };
-    const surfaceAt = (_x: number, _z: number, _progress: number): RoadSurface => {
-      if (track.id === "ice") {
-        return { grip: 0.64, drag: 0.9, acceleration: 0.94, driftGauge: 0.95 };
-      }
-      if (track.id === "desert") {
-        return { grip: 0.94, drag: 1.03, acceleration: 1, driftGauge: 1 };
-      }
-      if (track.id === "forest") {
-        return { grip: 0.97, drag: 1, acceleration: 1, driftGauge: 1 };
-      }
-      return { grip: 1, drag: 1, acceleration: 1, driftGauge: 1 };
-    };
+    const surfaceAt = () => trackSurface(track.id);
     const startHeight = collision.groundHeight(start.p[0], start.p[1], start.p[2]) ?? start.p[1];
     this.vehicle = new KartVehicle({
       position: { x: start.p[0], y: startHeight, z: start.p[2] },

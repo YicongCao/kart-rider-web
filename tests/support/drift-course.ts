@@ -16,6 +16,7 @@ import {
 import { Route } from "../../src/game/route";
 import { KartSuspension } from "../../src/game/suspension";
 import { TrackCollision } from "../../src/game/track-collision";
+import { trackSurface } from "../../src/game/track-surface";
 import {
   DEFAULT_TUNING,
   FIXED_STEP_SECONDS,
@@ -460,12 +461,7 @@ function buildRouteSampler(route: Route) {
 }
 
 function routeSurface(track: string) {
-  return {
-    grip: track === "desert" ? 0.94 : track === "forest" ? 0.97 : 1,
-    drag: 1,
-    acceleration: 1,
-    driftGauge: 1,
-  };
+  return trackSurface(track);
 }
 
 function findPointIndex(route: Route, s: number) {
