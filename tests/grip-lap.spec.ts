@@ -6,7 +6,12 @@ import { Route } from "../src/game/route";
 import { TrackCollision } from "../src/game/track-collision";
 import { trackSurface } from "../src/game/track-surface";
 import { DEFAULT_TUNING, KartVehicle } from "../src/game/vehicle";
-import type { RouteData, RoutePoint } from "../src/types";
+import type { RouteData, RoutePoint, RouteSample } from "../src/types";
+
+const CRUISE_SPEED = 45;
+const COAST_BAND = 2;
+const DRIVER_TIMESTEP = 0.01;
+const GRIP_BRAKE_DECELERATION = DEFAULT_TUNING.gripBrake / DEFAULT_TUNING.mass;
 
 function wrapAngle(angle: number) {
   return Math.atan2(Math.sin(angle), Math.cos(angle));
@@ -57,6 +62,60 @@ function curvatureAhead(points: RoutePoint[], length: number, index: number, met
     next += 1;
   }
   return curvature;
+}
+
+function cornerSpeedSquared(curvature: number) {
+  // The exported curvature measures the local change in tangent angle.
+  return 120 / Math.max(0.02, Math.abs(curvature));
+}
+
+function keyboardTargetSpeed(
+  route: Route,
+  { segment, s }: Pick<RouteSample, "segment" | "s">,
+  speed: number,
+  lookahead: number,
+) {
+  const stoppingDistance = speed ** 2 / (2 * GRIP_BRAKE_DECELERATION);
+  const preview = Math.max(lookahead, stoppingDistance + speed * DRIVER_TIMESTEP);
+  const current = route.points[segment];
+  const next = route.pointAt(segment + 1);
+  const distanceFrom = (s - current.s + route.length) % route.length;
+  const distanceTo = (next.s - s + route.length) % route.length;
+  const fraction = distanceFrom / (distanceFrom + distanceTo || 1);
+  const curvature = current.curvature + (next.curvature - current.curvature) * fraction;
+  let allowedSpeedSquared = Math.min(CRUISE_SPEED ** 2, cornerSpeedSquared(curvature));
+
+  // Work backwards from each sampled corner speed along the route arc.
+  for (let offset = 1; offset < route.points.length; offset++) {
+    const point = route.pointAt(segment + offset);
+    const distance = (point.s - s + route.length) % route.length;
+    if (distance > preview) break;
+    allowedSpeedSquared = Math.min(
+      allowedSpeedSquared,
+      cornerSpeedSquared(point.curvature) + 2 * GRIP_BRAKE_DECELERATION * distance,
+    );
+  }
+  return Math.sqrt(allowedSpeedSquared);
+}
+
+function analogTargetSpeed(route: Route, sample: RouteSample, lookahead: number) {
+  const curvature = curvatureAhead(route.points, route.length, sample.segment, lookahead);
+  const routeYaw = Math.atan2(sample.forward[0], sample.forward[2]);
+  const future = pointAhead(route.points, route.length, sample.segment, 30);
+  const futureYaw = Math.atan2(future.f[0], future.f[2]);
+  const bend = Math.abs(wrapAngle(futureYaw - routeYaw));
+  return Math.min(
+    CRUISE_SPEED,
+    Math.max(6, CRUISE_SPEED - 28 * bend),
+    Math.sqrt(cornerSpeedSquared(curvature)),
+  );
+}
+
+function keyboardSteer(error: number, lateralSpeed: number, slipRatio: number) {
+  const steer = Math.abs(error) > 0.035 ? Math.sign(error) : 0;
+  // Full lock opposite the lateral velocity adds body slip. Release it before
+  // the slip limit, while still allowing steering back toward the velocity.
+  return slipRatio >= 0.21 && steer * lateralSpeed < 0 ? 0 : steer;
 }
 
 /**
@@ -114,7 +173,7 @@ test("a sustained grip turn keeps lateral slip bounded", () => {
 interface GripLapOptions {
   /** Use only the discrete -1/0/1 values produced by keyboard steering. */
   keyboard?: boolean;
-  /** Curvature preview distance for the optional keyboard controller. */
+  /** Base curvature preview distance. Braking may require scanning farther. */
   curvatureLookahead?: number;
 }
 
@@ -153,21 +212,11 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
   });
 
   const curvatureLookahead = options.curvatureLookahead ?? 25;
-  const cruiseSpeed = 45;
-  const minimumBendSpeed = 6;
-  const coastBand = 2;
-  const gripDeceleration = DEFAULT_TUNING.gripBrake / DEFAULT_TUNING.mass;
-  // Cap approach speed using the distance to the edge of the preview, the
-  // bend-speed floor and nominal grip deceleration (v² = vBend² + 2ad).
-  const previewSpeedLimit = Math.sqrt(
-    minimumBendSpeed ** 2 + 2 * gripDeceleration * curvatureLookahead,
-  );
-  const speedLimit = options.keyboard ? Math.min(cruiseSpeed, previewSpeedLimit) : cruiseSpeed;
-
   let hint = 0;
   let collisions = 0;
   let maxLateral = 0;
   let maxSlipRatio = 0;
+  let maxCruiseSpeed = 0;
   let lapTime = Infinity;
   let firstCollision = "";
   let reversed = false;
@@ -178,12 +227,10 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
     const sample = route.query(state.x, state.z, hint, state.y);
     hint = sample.segment;
     maxLateral = Math.max(maxLateral, Math.abs(sample.lateral));
-    if ((state.suspension?.grounded ?? true) && Math.abs(state.speed) > 5) {
-      maxSlipRatio = Math.max(
-        maxSlipRatio,
-        Math.abs(state.lateralSpeed) / Math.abs(state.speed),
-      );
-    }
+    const slipRatio = (state.suspension?.grounded ?? true) && Math.abs(state.speed) > 5
+      ? Math.abs(state.lateralSpeed) / Math.abs(state.speed)
+      : 0;
+    maxSlipRatio = Math.max(maxSlipRatio, slipRatio);
     if (state.time > 1 && state.speed < -0.25) reversed = true;
     if (state.drifting || state.driftPhase !== "none") drifting = true;
 
@@ -193,35 +240,20 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
     const desiredYaw = Math.atan2(target.p[0] - state.x, target.p[2] - state.z);
     const error = wrapAngle(desiredYaw - state.yaw);
     const steer = options.keyboard
-      ? error > 0.035
-        ? 1
-        : error < -0.035
-          ? -1
-          : 0
+      ? keyboardSteer(error, state.lateralSpeed, slipRatio)
       : Math.max(-1, Math.min(1, error * 2.4));
     keyboardSteeringValues?.add(steer);
-    const curvature = curvatureAhead(
-      route.points,
-      route.length,
-      sample.segment,
-      curvatureLookahead,
-    );
-    const routeYaw = Math.atan2(sample.forward[0], sample.forward[2]);
-    const future = pointAhead(route.points, route.length, sample.segment, 30);
-    const futureYaw = Math.atan2(future.f[0], future.f[2]);
-    const bend = Math.abs(wrapAngle(futureYaw - routeYaw));
-    const targetSpeed = Math.min(
-      speedLimit,
-      Math.max(minimumBendSpeed, cruiseSpeed - 28 * bend),
-      Math.sqrt(120 / Math.max(0.02, curvature)),
-    );
+    const targetSpeed = options.keyboard
+      ? keyboardTargetSpeed(route, sample, speed, curvatureLookahead)
+      : analogTargetSpeed(route, sample, curvatureLookahead);
+    if (targetSpeed === CRUISE_SPEED) maxCruiseSpeed = Math.max(maxCruiseSpeed, speed);
     // Use the planned speed as the keyboard driver's braking threshold, with
     // room to coast below it before reapplying full throttle.
-    const throttleSpeed = options.keyboard ? targetSpeed - coastBand : targetSpeed;
-    const brakeSpeed = options.keyboard ? targetSpeed : targetSpeed + coastBand;
+    const throttleSpeed = options.keyboard ? targetSpeed - COAST_BAND : targetSpeed;
+    const brakeSpeed = options.keyboard ? targetSpeed : targetSpeed + COAST_BAND;
     const throttle = speed < throttleSpeed ? 1 : 0;
     const brake = speed > brakeSpeed ? 1 : 0;
-    const next = kart.step(0.01, { throttle, brake, steer });
+    const next = kart.step(DRIVER_TIMESTEP, { throttle, brake, steer });
     if (next.collisionCount > collisions) {
       collisions = next.collisionCount;
       if (!firstCollision) {
@@ -243,6 +275,7 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
     reversed,
     maxSlipRatio,
     maxLateral,
+    maxCruiseSpeed,
     lapTime,
     firstCollision,
     keyboardSteeringValues,
@@ -260,6 +293,7 @@ function expectCleanGripLap(
     maxLapTime: result.maxLapTime,
     maxSlipRatio: result.maxSlipRatio,
     maxLateral: result.maxLateral,
+    maxCruiseSpeed: result.maxCruiseSpeed,
     halfWidth: result.halfWidth,
     collisions: result.collisions,
     reversed: result.reversed,
@@ -282,11 +316,35 @@ test("a grip-only controller completes a clean village lap", async () => {
   expectCleanGripLap(result, "GRIP_LAP");
 });
 
+test("keyboard braking uses distance to a bend across the lap seam", () => {
+  const route = new Route({
+    length: 120,
+    halfWidth: 10,
+    points: [0, 20, 60, 95, 110].map<RoutePoint>(s => ({
+      s,
+      curvature: s === 0 ? 1 : 0,
+      p: [0, 0, s],
+      f: [0, 0, 1],
+      u: [0, 1, 0],
+    })),
+  });
+  const beforeBend = { segment: 2, s: 90 };
+  const speedAt30m = Math.sqrt(120 + 2 * GRIP_BRAKE_DECELERATION * 30);
+  const speedAt20m = Math.sqrt(120 + 2 * GRIP_BRAKE_DECELERATION * 20);
+
+  expect(keyboardTargetSpeed(route, beforeBend, 10, 25)).toBe(CRUISE_SPEED);
+  expect(keyboardTargetSpeed(route, beforeBend, 10, 40)).toBeCloseTo(speedAt30m, 8);
+  expect(keyboardTargetSpeed(route, beforeBend, 44, 25)).toBeCloseTo(speedAt30m, 8);
+  expect(keyboardTargetSpeed(route, { segment: 3, s: 100 }, 10, 25)).toBeCloseTo(speedAt20m, 8);
+});
+
 for (const curvatureLookahead of [25, 40]) {
-  test(`keyboard grip completes a clean village lap with ${curvatureLookahead} m curvature preview`, async () => {
+  test(`keyboard grip completes a clean village lap with ${curvatureLookahead} m base preview`, async () => {
     const result = await runGripLap("village", { keyboard: true, curvatureLookahead });
     expect(result.keyboardSteeringValues, "steering values sent to the kart")
       .toEqual(new Set([-1, 0, 1]));
     expectCleanGripLap(result, `GRIP_LAP_KEYBOARD_${curvatureLookahead}M`);
+    expect(result.maxCruiseSpeed, "actual speed on unrestricted straights")
+      .toBeGreaterThan(CRUISE_SPEED - COAST_BAND - 1);
   });
 }
