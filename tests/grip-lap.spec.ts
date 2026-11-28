@@ -5,7 +5,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { Route } from "../src/game/route";
 import { TrackCollision } from "../src/game/track-collision";
 import { trackSurface } from "../src/game/track-surface";
-import { KartVehicle } from "../src/game/vehicle";
+import { DEFAULT_TUNING, KartVehicle } from "../src/game/vehicle";
 import type { RouteData, RoutePoint } from "../src/types";
 
 function wrapAngle(angle: number) {
@@ -152,6 +152,18 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
     surfaceAt: () => trackSurface(track),
   });
 
+  const curvatureLookahead = options.curvatureLookahead ?? 25;
+  const cruiseSpeed = 45;
+  const minimumBendSpeed = 6;
+  const coastBand = 2;
+  const gripDeceleration = DEFAULT_TUNING.gripBrake / DEFAULT_TUNING.mass;
+  // Cap approach speed using the distance to the edge of the preview, the
+  // bend-speed floor and nominal grip deceleration (v² = vBend² + 2ad).
+  const previewSpeedLimit = Math.sqrt(
+    minimumBendSpeed ** 2 + 2 * gripDeceleration * curvatureLookahead,
+  );
+  const speedLimit = options.keyboard ? Math.min(cruiseSpeed, previewSpeedLimit) : cruiseSpeed;
+
   let hint = 0;
   let collisions = 0;
   let maxLateral = 0;
@@ -160,6 +172,7 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
   let firstCollision = "";
   let reversed = false;
   let drifting = false;
+  const keyboardSteeringValues = options.keyboard ? new Set<number>() : undefined;
   for (let frame = 0; frame < 32_000; frame++) {
     const state = kart.state;
     const sample = route.query(state.x, state.z, hint, state.y);
@@ -186,23 +199,28 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
           ? -1
           : 0
       : Math.max(-1, Math.min(1, error * 2.4));
+    keyboardSteeringValues?.add(steer);
     const curvature = curvatureAhead(
       route.points,
       route.length,
       sample.segment,
-      options.curvatureLookahead ?? 25,
+      curvatureLookahead,
     );
     const routeYaw = Math.atan2(sample.forward[0], sample.forward[2]);
     const future = pointAhead(route.points, route.length, sample.segment, 30);
     const futureYaw = Math.atan2(future.f[0], future.f[2]);
     const bend = Math.abs(wrapAngle(futureYaw - routeYaw));
     const targetSpeed = Math.min(
-      45,
-      Math.max(6, 45 - 28 * bend),
+      speedLimit,
+      Math.max(minimumBendSpeed, cruiseSpeed - 28 * bend),
       Math.sqrt(120 / Math.max(0.02, curvature)),
     );
-    const throttle = speed < targetSpeed ? 1 : 0;
-    const brake = speed > targetSpeed + 2 ? 1 : 0;
+    // Use the planned speed as the keyboard driver's braking threshold, with
+    // room to coast below it before reapplying full throttle.
+    const throttleSpeed = options.keyboard ? targetSpeed - coastBand : targetSpeed;
+    const brakeSpeed = options.keyboard ? targetSpeed : targetSpeed + coastBand;
+    const throttle = speed < throttleSpeed ? 1 : 0;
+    const brake = speed > brakeSpeed ? 1 : 0;
     const next = kart.step(0.01, { throttle, brake, steer });
     if (next.collisionCount > collisions) {
       collisions = next.collisionCount;
@@ -227,6 +245,7 @@ async function runGripLap(track: string, options: GripLapOptions = {}) {
     maxLateral,
     lapTime,
     firstCollision,
+    keyboardSteeringValues,
     halfWidth: route.halfWidth,
     maxLapTime: route.length / 22 + 20,
   };
@@ -263,13 +282,11 @@ test("a grip-only controller completes a clean village lap", async () => {
   expectCleanGripLap(result, "GRIP_LAP");
 });
 
-test("a keyboard-stepped grip controller completes a clean village lap", async () => {
-  // Real keyboard input is sampled as -1/0/1, never an analog steering value.
-  // The longer curvature preview lets the driver brake before the last
-  // square corner instead of carrying a slide into it.
-  const result = await runGripLap("village", {
-    keyboard: true,
-    curvatureLookahead: 40,
+for (const curvatureLookahead of [25, 40]) {
+  test(`keyboard grip completes a clean village lap with ${curvatureLookahead} m curvature preview`, async () => {
+    const result = await runGripLap("village", { keyboard: true, curvatureLookahead });
+    expect(result.keyboardSteeringValues, "steering values sent to the kart")
+      .toEqual(new Set([-1, 0, 1]));
+    expectCleanGripLap(result, `GRIP_LAP_KEYBOARD_${curvatureLookahead}M`);
   });
-  expectCleanGripLap(result, "GRIP_LAP_KEYBOARD");
-});
+}
